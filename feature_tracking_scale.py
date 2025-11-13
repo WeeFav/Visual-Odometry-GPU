@@ -11,8 +11,12 @@ class VisualOdom:
         self.images = [os.path.join(images_dir, p) for p in sorted(os.listdir(images_dir))]
         
         self.orb = cv2.ORB_create(3000)
-        FLANN_INDEX_LSH = 6
-        index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
+        self.sift = cv2.SIFT_create()
+
+        # FLANN_INDEX_LSH = 6
+        # index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
+        FLANN_INDEX_KDTREE = 1
+        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
         search_params = dict(checks=50)
         self.flann = cv2.FlannBasedMatcher(indexParams=index_params, searchParams=search_params)
 
@@ -31,7 +35,7 @@ class VisualOdom:
     
     def get_three_frame_matches(self, img3):
         # Find the keypoints and descriptors with ORB
-        self.kp3, self.des3 = self.orb.detectAndCompute(img3, None) # train
+        self.kp3, self.des3 = self.sift.detectAndCompute(img3, None) # train
 
         # Match frame 1-2
         matches_12 = self.flann.knnMatch(self.des1, self.des2, k=2)
@@ -129,7 +133,7 @@ class VisualOdom:
 
         points_4d_h = cv2.triangulatePoints(P1, P2, pts1_h, pts2_h)  # 4xN
         points_3d = points_4d_h[:3] / points_4d_h[3]                 # convert from homogeneous
-        return points_3d
+        return points_3d.T
 
     def estimate_scale(self, points_3d_12, points_3d_23):
         if len(points_3d_12) == 0 or len(points_3d_23) == 0:
@@ -149,9 +153,10 @@ class VisualOdom:
         points_3d_23 = self.triangulate_points(self.R_23, self.t_23, pts2, pts3)
         
         # Transform 3D points from frame1 to frame2 coordinate system
-        points_3d_12_in_2 = (self.R_12 @ points_3d_12) + self.t_12 
+        points_3d_12_in_2 = (self.R_12 @ points_3d_12.T) + self.t_12
+        points_3d_12_in_2 = points_3d_12_in_2.T 
 
-        self.visualize_3d_points(points_3d_12_in_2, points_3d_23)       
+        # self.visualize_3d_points(points_3d_12_in_2, points_3d_23)       
         
         scale = self.estimate_scale(points_3d_12_in_2, points_3d_23)
         return scale
@@ -217,16 +222,16 @@ class VisualOdom:
         gt_path = []
         estimated_path = []
 
-        for i, gt_pose in enumerate(tqdm(range(225))):  
+        for i, gt_pose in enumerate(tqdm(range(1000))):  
             gt_pose = self.gt_poses[i]
             
             if i == 0:
                 img1 = cv2.imread(self.images[0], cv2.IMREAD_GRAYSCALE)
-                self.kp1, self.des1 = self.orb.detectAndCompute(img1, None)
+                self.kp1, self.des1 = self.sift.detectAndCompute(img1, None)
                 cur_pose = gt_pose
             elif i == 1:
                 img2 = cv2.imread(self.images[1], cv2.IMREAD_GRAYSCALE)
-                self.kp2, self.des2 = self.orb.detectAndCompute(img2, None)
+                self.kp2, self.des2 = self.sift.detectAndCompute(img2, None)
                 self.R_12 = np.eye(3)
                 self.t_12 = np.zeros((3,1))
                 cur_pose = gt_pose
@@ -234,9 +239,8 @@ class VisualOdom:
                 img3 = cv2.imread(self.images[i], cv2.IMREAD_GRAYSCALE)
                 pts1, pts2, pts3 = self.get_three_frame_matches(img3)
 
-                pts1, pts2, pts3 = pts1[:10], pts2[:10], pts3[:10]
-                
-                self.draw_matches(i, pts1, pts2, pts3)
+                # pts1, pts2, pts3 = pts1[:10], pts2[:10], pts3[:10]
+                # self.draw_matches(i, pts1, pts2, pts3)
                 
                 self.R_23, self.t_23, T = self.get_pose(pts2, pts3)
                 
@@ -248,7 +252,7 @@ class VisualOdom:
                 # print(scale, true_scale)
                 
                 T[:3,3] *= scale
-                    
+
                 cur_pose = cur_pose @ np.linalg.inv(T)
                 
                 # Shift the cache: current becomes previous
@@ -276,6 +280,6 @@ class VisualOdom:
 if __name__ == '__main__':
     KITTI_DIR = "/home/d300/VO/data/kitti"
     # KITTI_DIR = "D:\Visual-Odometry-GPU\data\kitti"
-    seq = "08"
+    seq = "01"
     vo = VisualOdom(KITTI_DIR, seq)
     vo.run()

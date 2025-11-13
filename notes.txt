@@ -1,0 +1,2 @@
+1. orb produce bad trajectory, sift is better
+2. BFMatcher and FlannBasedMatcher makes no difference in terms of trajectory accuracy
