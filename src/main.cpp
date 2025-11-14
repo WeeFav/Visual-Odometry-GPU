@@ -22,9 +22,9 @@ public:
         }
         std::sort(images.begin(), images.end());
 
-        orb = cv::ORB::create(3000);
+        sift = cv::SIFT::create();
         
-        cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::LshIndexParams>(6, 12, 1);
+        cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::KDTreeIndexParams>(5);
         cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);
         flann = cv::makePtr<cv::FlannBasedMatcher>(indexParams, searchParams);
 
@@ -37,6 +37,8 @@ public:
     void run() {
         std::vector<cv::Point2d> gt_path;
         std::vector<cv::Point2d> est_path;
+        std::vector<double> gt_scale;
+        std::vector<double> est_scale;
         cv::Mat cur_pose;
 
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
@@ -44,39 +46,55 @@ public:
 
             if (i == 0) {
                 cv::Mat img1 = cv::imread(images[0], cv::IMREAD_GRAYSCALE);
-                orb->detectAndCompute(img1, cv::noArray(), kp1, des1);
+                sift->detectAndCompute(img1, cv::noArray(), kp1, des1);
                 cur_pose = gt_pose;
             } else {
                 cv::Mat img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
+                
                 std::vector<cv::Point2f> pts1, pts2;
                 get_matches(img2, pts1, pts2);
 
-                cv::Mat T = get_pose(pts1, pts2);
+                cv::Mat R, t;
+                get_pose(pts1, pts2, R, t);
+
+                double scale = get_scale(R, t, pts1, pts2);
 
                 double true_scale = cv::norm(gt_poses[i](cv::Range(0, 3), cv::Range(3, 4)) -
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
 
-                T(cv::Range(0, 3), cv::Range(3, 4)) *= true_scale;
+                
+                // construct unscaled relative transform betwen frames
+                cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
+                R.copyTo(T(cv::Range(0, 3), cv::Range(0, 3)));
+                t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
+                T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
 
                 cur_pose = cur_pose * T.inv();
 
                 // Shift the cache: current becomes previous
                 kp1 = kp2;
                 des1 = des2.clone();
+                prev_points_3d = points_3d;
+
+                gt_scale.push_back(true_scale);
+                est_scale.push_back(scale);
             }
 
             gt_path.push_back(cv::Point2d(gt_pose.at<double>(0, 3), gt_pose.at<double>(2, 3)));
             est_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
-                
+            
             // Draw paths
-            drawPaths(gt_path, est_path);
+            drawPaths(i, gt_path, est_path);
         }
+
         cv::waitKey(0);
+
+        savePaths("./gt_path.txt", "./est_path.txt", "./scale.txt", gt_path, est_path, gt_scale, est_scale);
     }
 
 private:
     std::vector<std::string> images;
-    cv::Ptr<cv::ORB> orb;
+    cv::Ptr<cv::SIFT> sift;
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
@@ -84,6 +102,8 @@ private:
     cv::Mat des1, des2;
     int w = 1000, h = 1000;
     cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC3);
+    std::vector<cv::Point3f> prev_points_3d;
+    std::vector<cv::Point3f> points_3d;
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -115,7 +135,7 @@ private:
 
     void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts1, std::vector<cv::Point2f> &pts2) {
         // Find the keypoints and descriptors
-        orb->detectAndCompute(img2, cv::noArray(), kp2, des2);
+        sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
 
         // Match frame 1-2
         std::vector<std::vector<cv::DMatch>> matches;
@@ -136,7 +156,7 @@ private:
         }
     }
 
-    cv::Mat get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2) {
+    void get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2, cv::Mat &R, cv::Mat &t) {
         // find essential matrix using RANSAC 5-point algorithm
         cv::Mat mask;
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0, mask);
@@ -151,30 +171,123 @@ private:
         // }
 
         // decompose essential matrix to get best R and best unscaled t
-        cv::Mat R, t;
         cv::recoverPose(E, pts1, pts2, K, R, t, mask);
-
-        // construct unscaled relative transform betwen frames
-        cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-        R.copyTo(T(cv::Range(0, 3), cv::Range(0, 3)));
-        t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
-
-        return T;
     }
 
-    void drawPaths(const std::vector<cv::Point2d> &gt_path, const std::vector<cv::Point2d> &est_path) {
+    double get_scale(
+        const cv::Mat &R, 
+        const cv::Mat &t,
+        const std::vector<cv::Point2f> &pts1, 
+        const std::vector<cv::Point2f> &pts2) 
+    {
+        // triangulation to get 3D points
+        cv::Mat P1 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
+        P1 = K * P1;
+
+        cv::Mat Rt;
+        cv::hconcat(R, t, Rt);
+        cv::Mat P2 = K * Rt; // second camera relative to first
+
+        // Convert points to cv::Mat (2xN)
+        cv::Mat pts1_T(2, pts1.size(), CV_64F);
+        cv::Mat pts2_T(2, pts2.size(), CV_64F);
+        for (size_t i = 0; i < pts1.size(); i++) {
+            pts1_T.at<double>(0, i) = pts1[i].x;
+            pts1_T.at<double>(1, i) = pts1[i].y;
+            pts2_T.at<double>(0, i) = pts2[i].x;
+            pts2_T.at<double>(1, i) = pts2[i].y;
+        }
+
+        cv::Mat points_4d_h;
+        cv::triangulatePoints(P1, P2, pts1_T, pts2_T, points_4d_h); // 4xN
+
+        // Convert from homogeneous to 3D
+        points_3d.clear();
+        for (int i = 0; i < points_4d_h.cols; ++i) {
+            double w = points_4d_h.at<double>(3, i);
+            points_3d.push_back(cv::Point3f(
+                points_4d_h.at<double>(0, i) / w,
+                points_4d_h.at<double>(1, i) / w,
+                points_4d_h.at<double>(2, i) / w
+            ));
+        }
+
+        // Estimate scale between previous and current 3D points
+        if (prev_points_3d.empty() || points_3d.empty())
+            return 1.0;
+
+        size_t min_idx = std::min(prev_points_3d.size(), points_3d.size());
+
+        std::vector<cv::Point3f> prev_pts(prev_points_3d.begin(), prev_points_3d.begin() + min_idx);
+        std::vector<cv::Point3f> cur_pts(points_3d.begin(), points_3d.begin() + min_idx);
+
+        std::vector<double> prev_dist, cur_dist;
+
+        for (size_t i = 1; i < min_idx; ++i) {
+            cv::Point3f dp = prev_pts[i] - prev_pts[i - 1];
+            prev_dist.push_back(std::sqrt(dp.x * dp.x + dp.y * dp.y + dp.z * dp.z));
+
+            cv::Point3f dc = cur_pts[i] - cur_pts[i - 1];
+            cur_dist.push_back(std::sqrt(dc.x * dc.x + dc.y * dc.y + dc.z * dc.z));
+        }
+
+        std::vector<double> ratios;
+        for (size_t i = 0; i < prev_dist.size(); ++i)
+            ratios.push_back(prev_dist[i] / (cur_dist[i] + 1e-6));
+
+        std::nth_element(ratios.begin(), ratios.begin() + ratios.size()/2, ratios.end());
+        double scale = ratios[ratios.size()/2];  // median
+
+        scale = std::max(0.1, std::min(5.0, scale));
+        return scale;                
+    }
+
+    void drawPaths(int i, const std::vector<cv::Point2d> &gt_path, const std::vector<cv::Point2d> &est_path) {
         auto draw_path = [&](const std::vector<cv::Point2d> &path, const cv::Scalar &color) {
             cv::line(canvas,
-                    cv::Point(int(path[path.size() - 2].x*1 + w/2), int(path[path.size() - 2].y*1 + h/2)),
-                    cv::Point(int(path[path.size() - 1].x*1 + w/2), int(path[path.size() - 1].y*1 + h/2)),
+                    cv::Point(int(w/2 + path[path.size() - 2].x*1), int(h/2 - path[path.size() - 2].y*1)),
+                    cv::Point(int(w/2 + path[path.size() - 1].x*1), int(h/2 - path[path.size() - 1].y*1)),
                     color, 2);
         };
 
         draw_path(gt_path, cv::Scalar(0, 255, 0));
         draw_path(est_path, cv::Scalar(0, 0, 255));
+        
+        cv::Mat display;
+        canvas.copyTo(display);  // copy current canvas
+        cv::putText(display, std::to_string(i), cv::Point(20, 20), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255,255,255));
+        cv::imshow("VO Path", display);
+        cv::waitKey(1);    
+    }
 
-        cv::imshow("VO Path", canvas);
-        cv::waitKey(1);
+
+    void savePaths(
+        const std::string &gt_file, 
+        const std::string &est_file,
+        const std::string &scale_file,
+        const std::vector<cv::Point2d> &gt_path,
+        const std::vector<cv::Point2d> &est_path,
+        const std::vector<double> &gt_scale,
+        const std::vector<double> &est_scale
+    )
+    {
+        std::ofstream gt_out(gt_file);
+        std::ofstream est_out(est_file);
+        std::ofstream scale_out(scale_file);
+
+        for (size_t i = 0; i < gt_path.size(); i++) {
+            gt_out << gt_path[i].x << " " << gt_path[i].y << "\n";
+        }
+        for (size_t i = 0; i < est_path.size(); i++) {
+            est_out << est_path[i].x << " " << est_path[i].y << "\n";
+        }
+        for (size_t i = 0; i < gt_scale.size(); i++) {
+            scale_out << gt_scale[i] << " " << est_scale[i] << "\n";
+        }
+
+        gt_out.close();
+        est_out.close();
+        scale_out.close();
     }
 };
 

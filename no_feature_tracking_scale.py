@@ -6,13 +6,19 @@ import open3d as o3d
 from tqdm import tqdm
     
 class VisualOdom:
-    def __init__(self, KITTI_DIR, seq):
+    def __init__(self, KITTI_DIR, seq, feature):
         images_dir = f"{KITTI_DIR}/data_odometry_gray/dataset/sequences/{seq}/image_0"
         self.images = [os.path.join(images_dir, p) for p in sorted(os.listdir(images_dir))]
         
-        self.sift = cv2.SIFT_create()
-        FLANN_INDEX_KDTREE = 1
-        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+        if feature == "orb":
+            self.feature = cv2.ORB_create(3000)
+            FLANN_INDEX_LSH = 6
+            index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
+        elif feature == "sift":
+            self.feature = cv2.SIFT_create()
+            FLANN_INDEX_KDTREE = 1
+            index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+        
         search_params = dict(checks=50)
         self.flann = cv2.FlannBasedMatcher(indexParams=index_params, searchParams=search_params)
 
@@ -33,7 +39,7 @@ class VisualOdom:
     
     def get_matches(self, img2):
         # Find the keypoints and descriptors with ORB
-        self.kp2, self.des2 = self.sift.detectAndCompute(img2, None) # train
+        self.kp2, self.des2 = self.feature.detectAndCompute(img2, None) # train
 
         # Match frame 1-2
         matches = self.flann.knnMatch(self.des1, self.des2, k=2)
@@ -91,20 +97,14 @@ class VisualOdom:
            
         # decompose essential matrix to get best R and best unscaled t
         retval, R, t, mask = cv2.recoverPose(E, pts2, pts3, self.K)
-
-        # construct unscaled relative transform betwen frames
-        T = np.eye(4, dtype=np.float64)
-        T[:3, :3] = R
-        T[:3, 3] = t.squeeze()
         
-        return R, t, T
+        return R, t
     
     def triangulate_points(self, R, t, pts1, pts2):
         # Projection matrices for frame1 and frame2
         P1 = self.K @ np.eye(3, 4)            # first camera as origin
         P2 = self.K @ np.hstack((R, t))       # second camera relative to first
         
-        # Convert points to homogeneous coordinates
         pts1_h = pts1.T  # shape 2xN
         pts2_h = pts2.T
 
@@ -130,8 +130,8 @@ class VisualOdom:
         scale = np.clip(scale, 0.1, 5.0)
         return scale
 
-    def get_scale(self, pts1, pts2):
-        self.points_3d = self.triangulate_points(self.R, self.t, pts1, pts2)
+    def get_scale(self, R, t, pts1, pts2):
+        self.points_3d = self.triangulate_points(R, t, pts1, pts2)
         
         # self.visualize_3d_points()       
         
@@ -200,12 +200,12 @@ class VisualOdom:
         gt_path = []
         estimated_path = []
 
-        for i, gt_pose in enumerate(tqdm(range(1000))):  
+        for i, gt_pose in enumerate(tqdm(range(799))):  
             gt_pose = self.gt_poses[i]
             
             if i == 0:
                 img1 = cv2.imread(self.images[0], cv2.IMREAD_GRAYSCALE)
-                self.kp1, self.des1 = self.sift.detectAndCompute(img1, None)
+                self.kp1, self.des1 = self.feature.detectAndCompute(img1, None)
                 cur_pose = gt_pose
             else:
                 img2 = cv2.imread(self.images[i], cv2.IMREAD_GRAYSCALE)
@@ -214,16 +214,16 @@ class VisualOdom:
                 # pts1, pts2, pts3 = pts1[:10], pts2[:10], pts3[:10]
                 # self.draw_matches(i, pts1, pts2, pts3)
                 
-                self.R, self.t, T = self.get_pose(pts1, pts2)
+                R, t = self.get_pose(pts1, pts2)
                 
-                scale = self.get_scale(pts1, pts2)
+                scale = self.get_scale(R, t, pts1, pts2)
                 
                 true_scale = np.linalg.norm(self.gt_poses[i][:3, 3] - self.gt_poses[i-1][:3, 3])
                 
-                # print("")
-                # print(scale, true_scale)
-                
-                T[:3,3] *= scale
+                # construct unscaled relative transform betwen frames
+                T = np.eye(4, dtype=np.float64)
+                T[:3, :3] = R
+                T[:3, 3] = t.squeeze() * scale
 
                 cur_pose = cur_pose @ np.linalg.inv(T)
                 
@@ -234,23 +234,26 @@ class VisualOdom:
             gt_path.append((gt_pose[0, 3], gt_pose[2, 3]))
             estimated_path.append((cur_pose[0, 3], cur_pose[2, 3]))
             
-        fig, ax = plt.subplots()
-        ax.set_xlabel("X")
-        ax.set_ylabel("Z")
-        ax.set_title("Path Visualization")
-        gt_line, = ax.plot([], [], 'g-', label='Ground Truth')
-        est_line, = ax.plot([], [], 'r-', label='Estimated')
-        ax.legend()
-        gt_line.set_data([p[0] for p in gt_path], [p[1] for p in gt_path])
-        est_line.set_data([p[0] for p in estimated_path], [p[1] for p in estimated_path])
-        ax.relim()            # recompute limits
-        ax.autoscale_view()   # rescale axes
-        plt.show()
-        
+        return gt_path, estimated_path
 
 if __name__ == '__main__':
     KITTI_DIR = "/home/d300/VO/data/kitti"
     # KITTI_DIR = "D:\Visual-Odometry-GPU\data\kitti"
-    seq = "01"
-    vo = VisualOdom(KITTI_DIR, seq)
-    vo.run()
+    seq = "03"
+    vo = VisualOdom(KITTI_DIR, seq, "orb")
+    gt_path, orb_path = vo.run()
+
+    vo = VisualOdom(KITTI_DIR, seq, "sift")
+    _, sift_path = vo.run()
+
+    fig, ax = plt.subplots()
+    ax.set_xlabel("X")
+    ax.set_ylabel("Z")
+    ax.set_title("Path Visualization")
+    ax.plot([p[0] for p in gt_path], [p[1] for p in gt_path], 'g-', label='Ground Truth')
+    ax.plot([p[0] for p in orb_path], [p[1] for p in orb_path], 'r-', label='ORB')
+    ax.plot([p[0] for p in sift_path], [p[1] for p in sift_path], 'b-', label='SIFT')
+    ax.legend()
+    ax.relim()            # recompute limits
+    ax.autoscale_view()   # rescale axes
+    plt.show()
