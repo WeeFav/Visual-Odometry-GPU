@@ -35,12 +35,6 @@ public:
     }
 
     void run() {
-        std::vector<cv::Point2d> gt_path;
-        std::vector<cv::Point2d> est_path;
-        std::vector<double> gt_scale;
-        std::vector<double> est_scale;
-        cv::Mat cur_pose;
-
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
 
@@ -51,13 +45,16 @@ public:
             } else {
                 cv::Mat img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
                 
+                std::vector<cv::KeyPoint> kp2;
+                cv::Mat des2;
                 std::vector<cv::Point2f> pts1, pts2;
-                get_matches(img2, pts1, pts2);
+                get_matches(img2, kp2, des2, pts1, pts2);
 
                 cv::Mat R, t;
                 get_pose(pts1, pts2, R, t);
 
-                double scale = get_scale(R, t, pts1, pts2);
+                std::vector<cv::Point3f> points_3d;
+                double scale = get_scale(R, t, pts1, pts2, points_3d);
 
                 double true_scale = cv::norm(gt_poses[i](cv::Range(0, 3), cv::Range(3, 4)) -
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
@@ -98,12 +95,19 @@ private:
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
-    std::vector<cv::KeyPoint> kp1, kp2;
-    cv::Mat des1, des2;
+
+    std::vector<cv::KeyPoint> kp1;
+    cv::Mat des1;
+    std::vector<cv::Point3f> prev_points_3d;
+    cv::Mat cur_pose; // camera pose C
+    
+    std::vector<cv::Point2d> gt_path;
+    std::vector<cv::Point2d> est_path;
     int w = 1000, h = 1000;
     cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC3);
-    std::vector<cv::Point3f> prev_points_3d;
-    std::vector<cv::Point3f> points_3d;
+
+    std::vector<double> gt_scale;
+    std::vector<double> est_scale;
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -133,7 +137,14 @@ private:
         K = P(cv::Range(0, 3), cv::Range(0, 3)).clone();
     }
 
-    void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts1, std::vector<cv::Point2f> &pts2) {
+    void get_matches(
+        const cv::Mat &img2, 
+        std::vector<cv::KeyPoint> &kp2,
+        cv::Mat &des2,
+        std::vector<cv::Point2f> &pts1, 
+        std::vector<cv::Point2f> &pts2
+    ) 
+    {
         // Find the keypoints and descriptors
         sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
 
@@ -156,7 +167,12 @@ private:
         }
     }
 
-    void get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2, cv::Mat &R, cv::Mat &t) {
+    void get_pose(
+        const std::vector<cv::Point2f> &pts1, 
+        const std::vector<cv::Point2f> &pts2, 
+        cv::Mat &R, 
+        cv::Mat &t) 
+    {
         // find essential matrix using RANSAC 5-point algorithm
         cv::Mat mask;
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0, mask);
@@ -178,7 +194,8 @@ private:
         const cv::Mat &R, 
         const cv::Mat &t,
         const std::vector<cv::Point2f> &pts1, 
-        const std::vector<cv::Point2f> &pts2) 
+        const std::vector<cv::Point2f> &pts2,
+        std::vector<cv::Point3f> &points_3d) 
     {
         // triangulation to get 3D points
         cv::Mat P1 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin

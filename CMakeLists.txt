@@ -4,7 +4,10 @@ project(mono_vo)
 set(CMAKE_CXX_STANDARD 17)
 
 find_package(OpenCV 4 REQUIRED)
+find_package(Ceres REQUIRED)
 
-add_executable(mono_vo src/main.cpp)
+add_executable(vo_matching src/feature_matching.cpp)
+target_link_libraries(vo_matching ${OpenCV_LIBS})
 
-target_link_libraries( mono_vo ${OpenCV_LIBS} )
+add_executable(vo_ba src/with_bundle_adjustment.cpp)
+target_link_libraries(vo_ba ${OpenCV_LIBS} Ceres::ceres)
