@@ -1,3 +1,8 @@
+#include <opencv2/opencv.hpp>
+#include <opencv2/features2d.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/highgui.hpp>
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,15 +11,17 @@
 #include <filesystem>
 #include <iterator>
 
-#include <opencv2/opencv.hpp>
-#include <opencv2/features2d.hpp>
-#include <opencv2/calib3d.hpp>
-#include <opencv2/highgui.hpp>
-
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
 
 namespace fs = std::filesystem;
+
+struct Landmark {
+    int id;
+    cv::Point3d pos;
+    // observations: pair(frame_index_in_window, 2D point)
+    std::vector<std::pair<int, cv::Point2d>> observations;
+};
 
 struct ReprojectionError {
     ReprojectionError(double observed_x, double observed_y, const cv::Mat& K)
@@ -59,6 +66,69 @@ struct ReprojectionError {
     double fx_, fy_, cx_, cy_;
 };
 
+// --- Helper functions ---
+
+// Extract R (3x3) and t (3x1) from a 4x4 pose matrix (world->camera): X_cam = R*X_world + t
+inline void extract_R_t_from_pose(const cv::Mat& pose4x4, cv::Mat& R, cv::Mat& t) {
+    CV_Assert(pose4x4.rows == 4 && pose4x4.cols == 4 && pose4x4.type() == CV_64F);
+    R = pose4x4(cv::Range(0,3), cv::Range(0,3)).clone();
+    t = pose4x4(cv::Range(0,3), cv::Range(3,4)).clone();
+}
+
+// Compose a 4x4 pose from R and t (R 3x3, t 3x1) world->camera
+inline cv::Mat compose_pose_from_R_t(const cv::Mat& R, const cv::Mat& t) {
+    cv::Mat pose = cv::Mat::eye(4,4,CV_64F);
+    R.copyTo(pose(cv::Range(0,3), cv::Range(0,3)));
+    t.copyTo(pose(cv::Range(0,3), cv::Range(3,4)));
+    return pose;
+}
+
+// Build projection matrix P = K * [R|t]
+inline cv::Mat buildProjection(const cv::Mat& K, const cv::Mat& R, const cv::Mat& t) {
+    cv::Mat Rt(3,4,CV_64F);
+    R.copyTo(Rt(cv::Range(0,3), cv::Range(0,3)));
+    t.copyTo(Rt(cv::Range(0,3), cv::Range(3,4)));
+    cv::Mat P = K * Rt;
+    return P;
+}
+
+// Triangulate points using OpenCV (expects matching vector of points in frame0 & frame1)
+inline std::vector<cv::Point3d> triangulatePointsLinear(
+    const std::vector<cv::Point2f>& pts0,
+    const std::vector<cv::Point2f>& pts1,
+    const cv::Mat& P0,
+    const cv::Mat& P1)
+{
+    std::vector<cv::Point3d> points_3d;
+    if (pts0.empty()) return points_3d;
+
+    // Convert points to cv::Mat (2xN)
+    cv::Mat pts0_T(2, pts0.size(), CV_64F);
+    cv::Mat pts1_T(2, pts1.size(), CV_64F);
+    for (size_t i = 0; i < pts0.size(); i++) {
+        pts0_T.at<double>(0, i) = pts0[i].x;
+        pts0_T.at<double>(1, i) = pts0[i].y;
+        pts1_T.at<double>(0, i) = pts1[i].x;
+        pts1_T.at<double>(1, i) = pts1[i].y;
+    }
+
+    cv::Mat points_4d_h;
+    cv::triangulatePoints(P0, P1, pts0_T, pts1_T, points_4d_h); // 4 x N
+    
+    points_3d.resize(points_4d_h.cols);
+    // Convert from homogeneous to 3D
+    for (int i = 0; i < points_4d_h.cols; ++i) {
+        double w = points_4d_h.at<double>(3, i);
+        double X = points_4d_h.at<double>(0, i) / w;
+        double Y = points_4d_h.at<double>(1, i) / w;
+        double Z = points_4d_h.at<double>(2, i) / w; 
+        // std::cout << "w: " << w << std::endl;    
+        points_3d[i] = cv::Point3d(X, Y, Z);
+    }
+
+    return points_3d;
+}
+
 class VisualOdom {
 public:
     VisualOdom(const std::string& KITTI_DIR, const std::string& seq) {
@@ -83,73 +153,103 @@ public:
     void run() {
         std::vector<cv::Point2d> gt_path;
         std::vector<cv::Point2d> est_path;
+        std::vector<cv::Point2d> opt_path;
         std::vector<double> gt_scale;
         std::vector<double> est_scale;
-        cv::Mat cur_pose;
 
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
 
             if (i == 0) {
-                cv::Mat img1 = cv::imread(images[0], cv::IMREAD_GRAYSCALE);
-                sift->detectAndCompute(img1, cv::noArray(), kp1, des1);
+                img1 = cv::imread(images[0], cv::IMREAD_GRAYSCALE);
+                std::vector<cv::KeyPoint> kp1;
+                sift->detect(img1, kp1);
+                cv::KeyPoint::convert(kp1, pts1);
                 cur_pose = gt_pose;
+                // *** Bundle Adjustment *** //
+                pose_window.push_back(cur_pose.clone()); // Add current pose
+                observations_window.push_back(pts1); // Add 2D observations
+                imgs_window.push_back(img1.clone()); // Add images
             } else {
                 cv::Mat img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
                 
-                std::vector<cv::Point2f> pts1, pts2;
-                get_matches(img2, pts1, pts2);
+                std::vector<cv::Point2f> pts2;
+                track_optical_flow(img2, pts2);
+
+                // Not enough points? Use feature matching for this frame
+                if (pts2.size() < 150) {             
+                    get_matches(img2, pts2);
+                }
 
                 cv::Mat R, t;
-                get_pose(pts1, pts2, R, t);
+                get_pose(pts2, R, t);
 
-                double scale = get_scale(R, t, pts1, pts2);
+                std::vector<cv::Point3f> points_3d;
+                double scale = get_scale(R, t, pts2, points_3d);
 
                 double true_scale = cv::norm(gt_poses[i](cv::Range(0, 3), cv::Range(3, 4)) -
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
-
+                
                 
                 // construct unscaled relative transform betwen frames
                 cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
                 R.copyTo(T(cv::Range(0, 3), cv::Range(0, 3)));
                 t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
                 T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
+                relative_transform_window.push_back(T.clone());
 
-                cur_pose = cur_pose * T.inv();
-                
+                cur_pose = T * cur_pose; // camera to world
+
                 // *** Bundle Adjustment *** //
                 pose_window.push_back(cur_pose.clone()); // Add current pose
-                landmark_window.push_back(points_3d); // Add landmarks of this frame
                 observations_window.push_back(pts2); // Add 2D observations
-                
-                // Keep window size fixed
-                if (pose_window.size() > WINDOW_SIZE) {
-                    pose_window.pop_front();
-                    landmark_window.pop_front();
-                    observations_window.pop_front();
-                }
-
-                // Run BA every 10 frames
-                if (i % 10 == 0 && pose_window.size() >= 3) {
-                    run_bundle_adjustment(pose_window, landmark_window, observations_window, K);
-                }
-                
-                cur_pose = pose_window.back();
+                imgs_window.push_back(img2.clone()); // Add images
 
                 // Shift the cache: current becomes previous
-                kp1 = kp2;
-                des1 = des2.clone();
+                img1 = img2.clone();
+                pts1 = pts2;
                 prev_points_3d = points_3d;
 
                 gt_scale.push_back(true_scale);
                 est_scale.push_back(scale);
             }
 
+            // *** Bundle Adjustment *** //
+            // Keep window size fixed
+            if (pose_window.size() > WINDOW_SIZE) {
+                pose_window.pop_front();
+                observations_window.pop_front();
+                imgs_window.pop_front();
+            }
+            if (relative_transform_window.size() > WINDOW_SIZE - 1) {
+                relative_transform_window.pop_front();
+            }
+
+            // Run BA every 10 frames
+            if (i % 10 == 0 && pose_window.size() == WINDOW_SIZE) {
+                run_bundle_adjustment();
+            }
+            
+            cur_pose = pose_window.back();
+            cv::Mat world_to_cam = cur_pose.inv(); // world to camera
+
             gt_path.push_back(cv::Point2d(gt_pose.at<double>(0, 3), gt_pose.at<double>(2, 3)));
             est_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
-            
+            opt_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
+            if (i % 10 == 0) {
+                int N = opt_path.size();
+                if (N >= WINDOW_SIZE) {
+                    for (int k = 0; k < WINDOW_SIZE; k++) {
+                        cv::Mat pose = pose_window[k];
+                        double x = pose.at<double>(0, 3);
+                        double z = pose.at<double>(2, 3);
+                        opt_path[N - WINDOW_SIZE + k] = cv::Point2d(x, z);
+                    }
+                }
+            }
+
             // Draw paths
-            drawPaths(i, gt_path, est_path);
+            drawPaths(i, gt_path, est_path, opt_path);
         }
 
         cv::waitKey(0);
@@ -163,11 +263,13 @@ private:
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
-    std::vector<cv::KeyPoint> kp1, kp2;
-    cv::Mat des1, des2;
+
+    // Cache
+    cv::Mat img1;
+    std::vector<cv::Point2f> pts1;
     std::vector<cv::Point3f> prev_points_3d;
-    std::vector<cv::Point3f> points_3d;
-    
+    cv::Mat cur_pose; // camera pose C
+
     // Path Visualization
     int w = 1000, h = 1000;
     cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC3);
@@ -175,8 +277,10 @@ private:
     // Bundle Adjustment
     int WINDOW_SIZE = 5;
     std::deque<cv::Mat> pose_window; // last N poses
-    std::deque<std::vector<cv::Point3f>> landmark_window; // 3D points per frame
     std::deque<std::vector<cv::Point2f>> observations_window; // 2D matches per frame
+    std::deque<cv::Mat> imgs_window;
+    std::deque<cv::Mat> relative_transform_window;
+
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -206,11 +310,44 @@ private:
         K = P(cv::Range(0, 3), cv::Range(0, 3)).clone();
     }
 
-    void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts1, std::vector<cv::Point2f> &pts2) {
+    void track_optical_flow(const cv::Mat &img2,
+                            std::vector<cv::Point2f> &pts2)
+    {
+        if (img1.empty() || pts1.empty()) return;
+
+        std::vector<uchar> status;
+        std::vector<float> err;
+
+        cv::calcOpticalFlowPyrLK(
+            img1, img2,
+            pts1, pts2,
+            status, err,
+            cv::Size(21,21), 3,
+            cv::TermCriteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, 30, 0.01)
+        );
+
+        // Remove lost tracks
+        std::vector<cv::Point2f> pts1_valid, pts2_valid;
+        for (size_t i = 0; i < status.size(); i++) {
+            if (status[i]) {
+                pts1_valid.push_back(pts1[i]);
+                pts2_valid.push_back(pts2[i]);
+            }
+        }
+
+        pts1 = pts1_valid;
+        pts2 = pts2_valid;
+    }
+
+    void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts2) 
+    {
+        std::vector<cv::KeyPoint> kp1, kp2;
+        cv::Mat des1, des2;
+        
         // Find the keypoints and descriptors
+        sift->detectAndCompute(img1, cv::noArray(), kp1, des1);
         sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
 
-        // Match frame 1-2
         std::vector<std::vector<cv::DMatch>> matches;
         flann->knnMatch(des1, des2, matches, 2);
 
@@ -229,7 +366,11 @@ private:
         }
     }
 
-    void get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2, cv::Mat &R, cv::Mat &t) {
+    void get_pose(
+        const std::vector<cv::Point2f> &pts2, 
+        cv::Mat &R, 
+        cv::Mat &t) 
+    {
         // find essential matrix using RANSAC 5-point algorithm
         cv::Mat mask;
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0, mask);
@@ -250,8 +391,8 @@ private:
     double get_scale(
         const cv::Mat &R, 
         const cv::Mat &t,
-        const std::vector<cv::Point2f> &pts1, 
-        const std::vector<cv::Point2f> &pts2) 
+        const std::vector<cv::Point2f> &pts2,
+        std::vector<cv::Point3f> &points_3d) 
     {
         // triangulation to get 3D points
         cv::Mat P1 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
@@ -315,93 +456,245 @@ private:
         return scale;                
     }
 
-    void run_bundle_adjustment(
-        std::deque<cv::Mat>& pose_window,
-        std::deque<std::vector<cv::Point3f>>& landmark_window,
-        std::deque<std::vector<cv::Point2f>>& observations_window,
-        const cv::Mat& K)
+    // --- Optical-flow tracking across window ---
+    // Track initial points (pts0) from frame 0 through all frames in `imgs`.
+    // Returns tracks: vector per point, each entry is pair(frame_index, point2f) where it was observed
+    std::vector<std::vector<std::pair<int, cv::Point2f>>> trackPointsAcrossWindow(const std::vector<cv::Point2f>& keypoints0)
     {
-        if (pose_window.size() < 3) return; // not enough yet
+        std::vector<std::vector<std::pair<int, cv::Point2f>>> tracks;
+        tracks.resize(keypoints0.size());
 
+        // track each initial point from frame 0 to each frame
+        // point is tracked through frame by frame propagation
+        for (size_t i = 0; i < keypoints0.size(); ++i) {
+            tracks[i].clear();
+            tracks[i].emplace_back(0, keypoints0[i]);
+            cv::Point2f prevPt = keypoints0[i];
+            bool alive = true;
+            for (int fi = 1; fi < (int)imgs_window.size(); ++fi) {
+                std::vector<cv::Point2f> in = { prevPt };
+                std::vector<cv::Point2f> out;
+                std::vector<unsigned char> status;
+                std::vector<float> err;
+                cv::calcOpticalFlowPyrLK(
+                    imgs_window[fi-1], imgs_window[fi],
+                    in, out,
+                    status, err,
+                    cv::Size(21,21), 3,
+                    cv::TermCriteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, 30, 0.01)
+                );
+                if (status[0]) {
+                    tracks[i].emplace_back(fi, out[0]);
+                    prevPt = out[0];
+                } else {
+                    alive = false;
+                    break;
+                }
+            }
+        }
+
+        return tracks;
+    }
+
+    // --- Build landmarks by triangulating from frames 0 and 1 and attaching observations from tracks ---
+    std::vector<Landmark> buildLandmarksFromFirstTwoFramesAndTracks(std::vector<cv::Point2f> keypoints0)
+    {
+        std::vector<std::vector<std::pair<int, cv::Point2f>>> tracks = trackPointsAcrossWindow(keypoints0);
+        
+        // Build projection matrices for frame 0 and 1
+
+        cv::Mat R0, t0, R1, t1;
+        extract_R_t_from_pose(pose_window[0], R0, t0);
+        extract_R_t_from_pose(pose_window[1], R1, t1);
+        cv::Mat P0 = buildProjection(K, R0, t0);
+        cv::Mat P1 = buildProjection(K, R1, t1);
+        
+        // cv::Mat P0 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
+        // P0 = K * P0;
+        // cv::Mat R, t;
+        // extract_R_t_from_pose(relative_transform_window[0], R, t);
+        // cv::Mat Rt;
+        // cv::hconcat(R, t, Rt);
+        // cv::Mat P1 = K * Rt; // second camera relative to first
+
+
+        // Prepare vectors for triangulation: only for points that have a valid observation in frame 1
+        std::vector<cv::Point2f> pts0_for_tri, pts1_for_tri;
+        std::vector<int> original_idx_for_tri;
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            // require that track has an observation at frame 1
+            bool hasFrame1 = false;
+            cv::Point2f p0 = keypoints0[i];
+            cv::Point2f p1;
+            for (auto &obs : tracks[i]) {
+                if (obs.first == 1) { 
+                    hasFrame1 = true; 
+                    p1 = obs.second; 
+                    break; 
+                }
+            }
+            if (hasFrame1) {
+                pts0_for_tri.push_back(p0);
+                pts1_for_tri.push_back(p1);
+                original_idx_for_tri.push_back((int)i);
+            }
+        }
+        
+        // std::cout << "P0: " << P0 << std::endl;
+        // std::cout << "P1: " << P1 << std::endl;
+
+        // for (int j = 0; j < pts0_for_tri.size(); j++) {
+        //     std::cout << "Pair " << j << ": "
+        //             << pts0_for_tri[j] << " -> "
+        //             << pts1_for_tri[j] << std::endl;
+        // }
+
+        std::vector<cv::Point3d> points_3d = triangulatePointsLinear(pts0_for_tri, pts1_for_tri, P0, P1);
+        assert(points_3d.size() == original_idx_for_tri.size());
+
+        // Build landmarks using 3d points from frame 0, 1 and images points across frames
+        std::vector<Landmark> landmarks;
+        landmarks.reserve(points_3d.size());
+        for (size_t j = 0; j < points_3d.size(); ++j) {
+            cv::Point3d X = points_3d[j];
+
+            // Simple depth check
+            if (X.z <= 0) continue;
+
+            Landmark lm;
+            lm.id = j;
+            lm.pos = X;
+
+            // add observations from tracks for frames where track succeeded
+            int orig_idx = original_idx_for_tri[j];
+            for (auto &obs : tracks[orig_idx]) {
+                // obs: (frame_idx, pt)
+                lm.observations.emplace_back(obs.first, cv::Point2d(obs.second.x, obs.second.y));
+            }
+            landmarks.push_back(lm);
+        }
+
+        return landmarks;
+    }
+
+    void run_bundle_adjustment()
+    {
+        // Check everything has WINDOW_SIZE frames
+        if (pose_window.size() != WINDOW_SIZE || observations_window.size() != WINDOW_SIZE || imgs_window.size() != WINDOW_SIZE) {
+            std::cerr << "Need same size.\n";
+            return;
+        }
+
+        // Initial keypoints: use features from first image.
+        std::vector<cv::Point2f> keypoints0;
+        // If caller provided observations for frame 0, use them; else detect features
+        if (!observations_window[0].empty()) {
+            for (auto &p : observations_window[0]) keypoints0.emplace_back((float)p.x, (float)p.y);
+        } else {
+            // detect good features in frame 0
+            cv::goodFeaturesToTrack(imgs_window[0], keypoints0, 2000, 0.01, 8);
+        }
+
+        if (keypoints0.empty()) {
+            std::cerr << "No initial keypoints to track.\n";
+            return;
+        }
+
+        // Build landmarks by tracking & triangulation
+        std::vector<Landmark> landmarks = buildLandmarksFromFirstTwoFramesAndTracks(keypoints0);
+        if (landmarks.empty()) {
+            std::cerr << "No landmarks after triangulation.\n";
+            return;
+        }
+
+        // --- Setup Ceres problem ---
         ceres::Problem problem;
 
-        const int N = pose_window.size();
-
-        // Convert poses to double arrays (angle-axis + t)
-        std::vector<std::array<double,6>> pose_params(N);
-        for (int i = 0; i < N; i++) {
-            cv::Mat R = pose_window[i](cv::Range(0,3), cv::Range(0,3));
-            cv::Mat t = pose_window[i](cv::Range(0,3), cv::Range(3,4));
-
+        // Parameter blocks for poses: vector<double> per frame of size 6 (angle-axis 3 + translation 3)
+        std::vector<std::array<double,6>> pose_params(WINDOW_SIZE);
+        for (int i = 0; i < WINDOW_SIZE; ++i) {
+            cv::Mat R, t;
+            extract_R_t_from_pose(pose_window[i], R, t);
             cv::Mat rvec;
-            cv::Rodrigues(R, rvec);
-
-            pose_params[i][0] = rvec.at<double>(0);
-            pose_params[i][1] = rvec.at<double>(1);
-            pose_params[i][2] = rvec.at<double>(2);
-            pose_params[i][3] = t.at<double>(0);
-            pose_params[i][4] = t.at<double>(1);
-            pose_params[i][5] = t.at<double>(2);
-
+            cv::Rodrigues(R, rvec); // rvec is 3x1 rotation vector (angle-axis)
+            pose_params[i][0] = rvec.at<double>(0,0);
+            pose_params[i][1] = rvec.at<double>(1,0);
+            pose_params[i][2] = rvec.at<double>(2,0);
+            pose_params[i][3] = t.at<double>(0,0);
+            pose_params[i][4] = t.at<double>(1,0);
+            pose_params[i][5] = t.at<double>(2,0);
             problem.AddParameterBlock(pose_params[i].data(), 6);
-            if (i == 0)
-                problem.SetParameterBlockConstant(pose_params[i].data()); // fix first pose
         }
 
-        // Landmarks
-        std::vector<std::array<double,3>> points3d_params;
-        for (auto& lm_set : landmark_window)
-            for (auto& p : lm_set) {
-                points3d_params.push_back({p.x, p.y, p.z});
-            }
+        // Parameter blocks for points
+        std::vector<std::array<double,3>> point_params;
+        point_params.reserve(landmarks.size());
+        for (size_t i = 0; i < landmarks.size(); ++i) {
+            std::array<double,3> p;
+            p[0] = landmarks[i].pos.x;
+            p[1] = landmarks[i].pos.y;
+            p[2] = landmarks[i].pos.z;
+            point_params.push_back(p);
+            problem.AddParameterBlock(point_params.back().data(), 3);
+            
+            // for (int k = 0; k < 3; k++) {
+            //     std::cout << "point_params[" << i << "][" << k << "] = "
+            //             << point_params[i][k] << std::endl;
+            // }        
 
-        int point_index = 0;
-        for (int k = 0; k < N; k++) {
-            for (int j = 0; j < landmark_window[k].size(); j++) {
-                problem.AddParameterBlock(points3d_params[point_index].data(), 3); // add landmark as parameter for each landmark in a frame for N frames 
+        }
 
-                ceres::CostFunction* cost =
-                    ReprojectionError::Create(
-                        observations_window[k][j].x,
-                        observations_window[k][j].y,
-                        K
-                    );
-
+        // Add residuals: for each landmark and each observation in the window
+        for (size_t i = 0; i < landmarks.size(); ++i) {
+            const Landmark& lm = landmarks[i];
+            for (auto &obs : lm.observations) {
+                int frame_idx = obs.first;
+                if (frame_idx < 0 || frame_idx >= WINDOW_SIZE) continue;
+                
+                // Build reprojection residual
+                ceres::CostFunction* cost = ReprojectionError::Create(obs.second.x, obs.second.y, K);
                 problem.AddResidualBlock(
                     cost, 
-                    new ceres::HuberLoss(1.0),
-                    pose_params[k].data(),
-                    points3d_params[point_index].data()
+                    new ceres::HuberLoss(1.0), 
+                    pose_params[frame_idx].data(), // frame's pose
+                    point_params[i].data() // landmark's 3D point
                 );
-                point_index++;
             }
         }
 
+        // fix the first pose
+        problem.SetParameterBlockConstant(pose_params[0].data());
+
+        // Solve
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::SPARSE_SCHUR;
-        options.max_num_iterations = 25;
-        options.minimizer_progress_to_stdout = false;
+        options.minimizer_progress_to_stdout = true;
+        options.max_num_iterations = 200;
         options.num_threads = 4;
 
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
 
-        // Put optimized poses back
-        for (int i = 0; i < N; i++) {
-            cv::Mat rvec = (cv::Mat_<double>(3,1) << 
-                pose_params[i][0], pose_params[i][1], pose_params[i][2]);
+        std::cout << summary.FullReport() << std::endl;
 
+        // Write optimized poses back into pose_window
+        for (int i = 0; i < WINDOW_SIZE; ++i) {
+            cv::Mat rvec = (cv::Mat_<double>(3,1) << pose_params[i][0], pose_params[i][1], pose_params[i][2]);
             cv::Mat R;
             cv::Rodrigues(rvec, R);
-
-            pose_window[i](cv::Range(0,3), cv::Range(0,3)) = R.clone();
-            pose_window[i].at<double>(0,3) = pose_params[i][3];
-            pose_window[i].at<double>(1,3) = pose_params[i][4];
-            pose_window[i].at<double>(2,3) = pose_params[i][5];
+            cv::Mat t = (cv::Mat_<double>(3,1) << pose_params[i][3], pose_params[i][4], pose_params[i][5]);
+            cv::Mat newPose = compose_pose_from_R_t(R, t);
+            pose_window[i] = newPose.clone();
         }
+
     }
 
-    void drawPaths(int i, const std::vector<cv::Point2d> &gt_path, const std::vector<cv::Point2d> &est_path) {
+    void drawPaths(
+        int i, 
+        const std::vector<cv::Point2d> &gt_path, 
+        const std::vector<cv::Point2d> &est_path, 
+        const std::vector<cv::Point2d> &opt_path) 
+    {
         auto draw_path = [&](const std::vector<cv::Point2d> &path, const cv::Scalar &color) {
             cv::line(canvas,
                     cv::Point(int(w/2 + path[path.size() - 2].x*1), int(h/2 - path[path.size() - 2].y*1)),
@@ -411,6 +704,7 @@ private:
 
         draw_path(gt_path, cv::Scalar(0, 255, 0));
         draw_path(est_path, cv::Scalar(0, 0, 255));
+        draw_path(opt_path, cv::Scalar(255, 0, 0));
         
         cv::Mat display;
         canvas.copyTo(display);  // copy current canvas
@@ -418,7 +712,6 @@ private:
         cv::imshow("VO Path", display);
         cv::waitKey(1);    
     }
-
 
     void savePaths(
         const std::string &gt_file, 

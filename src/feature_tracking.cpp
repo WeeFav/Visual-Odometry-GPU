@@ -45,28 +45,27 @@ public:
             cv::Mat gt_pose = gt_poses[i].clone();
 
             if (i == 0) {
-                img1 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
+                img1 = cv::imread(images[0], cv::IMREAD_GRAYSCALE);
+                std::vector<cv::KeyPoint> kp1;
                 sift->detect(img1, kp1);
-                cv::KeyPoint::convert(kp1, tracked_pts1);
-                cur_pose = gt_pose;
+                cv::KeyPoint::convert(kp1, pts1);
+                cur_pose = gt_pose.clone();
             } else {
-                img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
-                // Optical flow tracking
-                track_optical_flow(img2); 
+                cv::Mat img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
+                
+                std::vector<cv::Point2f> pts2;
+                track_optical_flow(img2, pts2);
 
-                // Not enough points? Reinitialize
-                if (tracked_pts2.size() < 150) {                   // GPT OF:
-                    sift->detect(img2, kp1);                        // GPT OF:
-                    cv::KeyPoint::convert(kp1, tracked_pts2);      // GPT OF:
-                    tracked_pts1 = tracked_pts2;                   // GPT OF:
-                    prev_img = img.clone();                        // GPT OF:
-                    continue;                                      // GPT OF:
+                // Not enough points? Use feature matching for this frame
+                if (pts2.size() < 150) {             
+                    get_matches(img2, pts2);
                 }
 
                 cv::Mat R, t;
-                get_pose(pts1, pts2, R, t);
+                get_pose(pts2, R, t);
 
-                double scale = get_scale(R, t, pts1, pts2);
+                std::vector<cv::Point3f> points_3d;
+                double scale = get_scale(R, t, pts2, points_3d);
 
                 double true_scale = cv::norm(gt_poses[i](cv::Range(0, 3), cv::Range(3, 4)) -
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
@@ -78,11 +77,11 @@ public:
                 t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
                 T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
 
-                cur_pose = cur_pose * T.inv();
+                cur_pose = prev_pose * T;
 
                 // Shift the cache: current becomes previous
-                kp1 = kp2;
-                des1 = des2.clone();
+                img1 = img2.clone();
+                pts1 = pts2;
                 prev_points_3d = points_3d;
 
                 gt_scale.push_back(true_scale);
@@ -91,6 +90,8 @@ public:
 
             gt_path.push_back(cv::Point2d(gt_pose.at<double>(0, 3), gt_pose.at<double>(2, 3)));
             est_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
+                
+            prev_pose = cur_pose.clone();
             
             // Draw paths
             drawPaths(i, gt_path, est_path);
@@ -107,13 +108,14 @@ private:
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
-    std::vector<cv::KeyPoint> kp1, kp2;
-    std::vector<cv::Point2f> tracked_pts1, tracked_pts2;
+
     cv::Mat img1;
+    std::vector<cv::Point2f> pts1;
+    std::vector<cv::Point3f> prev_points_3d;
+    cv::Mat prev_pose; // camera pose C, camera to world
+
     int w = 1000, h = 1000;
     cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC3);
-    std::vector<cv::Point3f> prev_points_3d;
-    std::vector<cv::Point3f> points_3d;
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -143,7 +145,8 @@ private:
         K = P(cv::Range(0, 3), cv::Range(0, 3)).clone();
     }
 
-    void track_optical_flow(const cv::Mat &img2)
+    void track_optical_flow(const cv::Mat &img2,
+                            std::vector<cv::Point2f> &pts2)
     {
         if (img1.empty() || pts1.empty()) return;
 
@@ -159,19 +162,50 @@ private:
         );
 
         // Remove lost tracks
-        std::vector<cv::Point2f> pts1_filt, pts2_filt;
+        std::vector<cv::Point2f> pts1_valid, pts2_valid;
         for (size_t i = 0; i < status.size(); i++) {
             if (status[i]) {
-                pts1_filt.push_back(pts1[i]);
-                pts2_filt.push_back(pts2[i]);
+                pts1_valid.push_back(pts1[i]);
+                pts2_valid.push_back(pts2[i]);
             }
         }
 
-        pts1 = pts1_filt;
-        pts2 = pts2_filt;
+        pts1 = pts1_valid;
+        pts2 = pts2_valid;
     }
 
-    void get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2, cv::Mat &R, cv::Mat &t) {
+    void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts2) 
+    {
+        std::vector<cv::KeyPoint> kp1, kp2;
+        cv::Mat des1, des2;
+        
+        // Find the keypoints and descriptors
+        sift->detectAndCompute(img1, cv::noArray(), kp1, des1);
+        sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
+
+        std::vector<std::vector<cv::DMatch>> matches;
+        flann->knnMatch(des1, des2, matches, 2);
+
+        pts1.clear();
+        pts2.clear();
+
+        // Extract corresponding keypoints
+        for (size_t i = 0; i < matches.size(); i++) {
+            if (matches[i].size() < 2) continue;
+            cv::DMatch m = matches[i][0]; // first match
+            cv::DMatch n = matches[i][1]; // second match
+            if (m.distance < 0.8 * n.distance) {
+                pts1.push_back(kp1[m.queryIdx].pt);
+                pts2.push_back(kp2[m.trainIdx].pt);
+            }
+        }
+    }
+
+    void get_pose(
+        const std::vector<cv::Point2f> &pts2, 
+        cv::Mat &R, 
+        cv::Mat &t) 
+    {
         // find essential matrix using RANSAC 5-point algorithm
         cv::Mat mask;
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0, mask);
@@ -192,8 +226,8 @@ private:
     double get_scale(
         const cv::Mat &R, 
         const cv::Mat &t,
-        const std::vector<cv::Point2f> &pts1, 
-        const std::vector<cv::Point2f> &pts2) 
+        const std::vector<cv::Point2f> &pts2,
+        std::vector<cv::Point3f> &points_3d) 
     {
         // triangulation to get 3D points
         cv::Mat P1 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
@@ -274,7 +308,6 @@ private:
         cv::imshow("VO Path", display);
         cv::waitKey(1);    
     }
-
 
     void savePaths(
         const std::string &gt_file, 

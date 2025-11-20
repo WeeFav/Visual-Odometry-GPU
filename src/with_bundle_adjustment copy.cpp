@@ -1,8 +1,3 @@
-#include <opencv2/opencv.hpp>
-#include <opencv2/features2d.hpp>
-#include <opencv2/calib3d.hpp>
-#include <opencv2/highgui.hpp>
-
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -11,7 +6,58 @@
 #include <filesystem>
 #include <iterator>
 
+#include <opencv2/opencv.hpp>
+#include <opencv2/features2d.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/highgui.hpp>
+
+#include <ceres/ceres.h>
+#include <ceres/rotation.h>
+
 namespace fs = std::filesystem;
+
+struct ReprojectionError {
+    ReprojectionError(double observed_x, double observed_y, const cv::Mat& K)
+        : x_(observed_x), y_(observed_y)
+    {
+        fx_ = K.at<double>(0,0);
+        fy_ = K.at<double>(1,1);
+        cx_ = K.at<double>(0,2);
+        cy_ = K.at<double>(1,2);
+    }
+
+    template <typename T>
+    bool operator()(const T* const pose,    // 6 DOF: angle-axis + translation
+                    const T* const point3d, // landmark X,Y,Z
+                    T* residuals) const 
+    {
+        // Pose format: pose[0:3] = angle-axis, pose[3:6] = t
+        T p[3];
+        ceres::AngleAxisRotatePoint(pose, point3d, p);
+        p[0] += pose[3];
+        p[1] += pose[4];
+        p[2] += pose[5];
+
+        // Project into pixel coordinates
+        T u = T(fx_) * p[0] / p[2] + T(cx_);
+        T v = T(fy_) * p[1] / p[2] + T(cy_);
+
+        residuals[0] = u - T(x_);
+        residuals[1] = v - T(y_);
+        return true;
+    }
+
+    static ceres::CostFunction* Create(double observed_x,
+                                       double observed_y,
+                                       const cv::Mat& K)
+    {
+        return (new ceres::AutoDiffCostFunction<ReprojectionError, 2, 6, 3>(
+            new ReprojectionError(observed_x, observed_y, K)));
+    }
+
+    double x_, y_;
+    double fx_, fy_, cx_, cy_;
+};
 
 class VisualOdom {
 public:
@@ -39,6 +85,7 @@ public:
         std::vector<cv::Point2d> est_path;
         std::vector<double> gt_scale;
         std::vector<double> est_scale;
+        cv::Mat cur_pose;
 
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
@@ -50,16 +97,13 @@ public:
             } else {
                 cv::Mat img2 = cv::imread(images[i], cv::IMREAD_GRAYSCALE);
                 
-                std::vector<cv::KeyPoint> kp2;
-                cv::Mat des2;
                 std::vector<cv::Point2f> pts1, pts2;
-                get_matches(img2, kp2, des2, pts1, pts2);
+                get_matches(img2, pts1, pts2);
 
                 cv::Mat R, t;
                 get_pose(pts1, pts2, R, t);
 
-                std::vector<cv::Point3f> points_3d;
-                double scale = get_scale(R, t, pts1, pts2, points_3d);
+                double scale = get_scale(R, t, pts1, pts2);
 
                 double true_scale = cv::norm(gt_poses[i](cv::Range(0, 3), cv::Range(3, 4)) -
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
@@ -72,6 +116,25 @@ public:
                 T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
 
                 cur_pose = cur_pose * T.inv();
+                
+                // *** Bundle Adjustment *** //
+                pose_window.push_back(cur_pose.clone()); // Add current pose
+                landmark_window.push_back(points_3d); // Add landmarks of this frame
+                observations_window.push_back(pts2); // Add 2D observations
+                
+                // Keep window size fixed
+                if (pose_window.size() > WINDOW_SIZE) {
+                    pose_window.pop_front();
+                    landmark_window.pop_front();
+                    observations_window.pop_front();
+                }
+
+                // Run BA every 10 frames
+                if (i % 10 == 0 && pose_window.size() >= 3) {
+                    run_bundle_adjustment(pose_window, landmark_window, observations_window, K);
+                }
+                
+                cur_pose = pose_window.back();
 
                 // Shift the cache: current becomes previous
                 kp1 = kp2;
@@ -100,16 +163,20 @@ private:
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
-
-    std::vector<cv::KeyPoint> kp1;
-    cv::Mat des1;
+    std::vector<cv::KeyPoint> kp1, kp2;
+    cv::Mat des1, des2;
     std::vector<cv::Point3f> prev_points_3d;
-    cv::Mat cur_pose; // camera pose C
+    std::vector<cv::Point3f> points_3d;
     
-
+    // Path Visualization
     int w = 1000, h = 1000;
     cv::Mat canvas = cv::Mat::zeros(h, w, CV_8UC3);
 
+    // Bundle Adjustment
+    int WINDOW_SIZE = 5;
+    std::deque<cv::Mat> pose_window; // last N poses
+    std::deque<std::vector<cv::Point3f>> landmark_window; // 3D points per frame
+    std::deque<std::vector<cv::Point2f>> observations_window; // 2D matches per frame
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -139,14 +206,7 @@ private:
         K = P(cv::Range(0, 3), cv::Range(0, 3)).clone();
     }
 
-    void get_matches(
-        const cv::Mat &img2, 
-        std::vector<cv::KeyPoint> &kp2,
-        cv::Mat &des2,
-        std::vector<cv::Point2f> &pts1, 
-        std::vector<cv::Point2f> &pts2
-    ) 
-    {
+    void get_matches(const cv::Mat &img2, std::vector<cv::Point2f> &pts1, std::vector<cv::Point2f> &pts2) {
         // Find the keypoints and descriptors
         sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
 
@@ -169,12 +229,7 @@ private:
         }
     }
 
-    void get_pose(
-        const std::vector<cv::Point2f> &pts1, 
-        const std::vector<cv::Point2f> &pts2, 
-        cv::Mat &R, 
-        cv::Mat &t) 
-    {
+    void get_pose(const std::vector<cv::Point2f> &pts1, const std::vector<cv::Point2f> &pts2, cv::Mat &R, cv::Mat &t) {
         // find essential matrix using RANSAC 5-point algorithm
         cv::Mat mask;
         cv::Mat E = cv::findEssentialMat(pts1, pts2, K, cv::RANSAC, 0.999, 1.0, mask);
@@ -196,8 +251,7 @@ private:
         const cv::Mat &R, 
         const cv::Mat &t,
         const std::vector<cv::Point2f> &pts1, 
-        const std::vector<cv::Point2f> &pts2,
-        std::vector<cv::Point3f> &points_3d) 
+        const std::vector<cv::Point2f> &pts2) 
     {
         // triangulation to get 3D points
         cv::Mat P1 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
@@ -261,6 +315,92 @@ private:
         return scale;                
     }
 
+    void run_bundle_adjustment(
+        std::deque<cv::Mat>& pose_window,
+        std::deque<std::vector<cv::Point3f>>& landmark_window,
+        std::deque<std::vector<cv::Point2f>>& observations_window,
+        const cv::Mat& K)
+    {
+        if (pose_window.size() < 3) return; // not enough yet
+
+        ceres::Problem problem;
+
+        const int N = pose_window.size();
+
+        // Convert poses to double arrays (angle-axis + t)
+        std::vector<std::array<double,6>> pose_params(N);
+        for (int i = 0; i < N; i++) {
+            cv::Mat R = pose_window[i](cv::Range(0,3), cv::Range(0,3));
+            cv::Mat t = pose_window[i](cv::Range(0,3), cv::Range(3,4));
+
+            cv::Mat rvec;
+            cv::Rodrigues(R, rvec);
+
+            pose_params[i][0] = rvec.at<double>(0);
+            pose_params[i][1] = rvec.at<double>(1);
+            pose_params[i][2] = rvec.at<double>(2);
+            pose_params[i][3] = t.at<double>(0);
+            pose_params[i][4] = t.at<double>(1);
+            pose_params[i][5] = t.at<double>(2);
+
+            problem.AddParameterBlock(pose_params[i].data(), 6);
+            if (i == 0)
+                problem.SetParameterBlockConstant(pose_params[i].data()); // fix first pose
+        }
+
+        // Landmarks
+        std::vector<std::array<double,3>> points3d_params;
+        for (auto& lm_set : landmark_window)
+            for (auto& p : lm_set) {
+                points3d_params.push_back({p.x, p.y, p.z});
+            }
+
+        int point_index = 0;
+        for (int k = 0; k < N; k++) {
+            for (int j = 0; j < landmark_window[k].size(); j++) {
+                problem.AddParameterBlock(points3d_params[point_index].data(), 3); // add landmark as parameter for each landmark in a frame for N frames 
+
+                ceres::CostFunction* cost =
+                    ReprojectionError::Create(
+                        observations_window[k][j].x,
+                        observations_window[k][j].y,
+                        K
+                    );
+
+                problem.AddResidualBlock(
+                    cost, 
+                    new ceres::HuberLoss(1.0),
+                    pose_params[k].data(),
+                    points3d_params[point_index].data()
+                );
+                point_index++;
+            }
+        }
+
+        ceres::Solver::Options options;
+        options.linear_solver_type = ceres::SPARSE_SCHUR;
+        options.max_num_iterations = 25;
+        options.minimizer_progress_to_stdout = false;
+        options.num_threads = 4;
+
+        ceres::Solver::Summary summary;
+        ceres::Solve(options, &problem, &summary);
+
+        // Put optimized poses back
+        for (int i = 0; i < N; i++) {
+            cv::Mat rvec = (cv::Mat_<double>(3,1) << 
+                pose_params[i][0], pose_params[i][1], pose_params[i][2]);
+
+            cv::Mat R;
+            cv::Rodrigues(rvec, R);
+
+            pose_window[i](cv::Range(0,3), cv::Range(0,3)) = R.clone();
+            pose_window[i].at<double>(0,3) = pose_params[i][3];
+            pose_window[i].at<double>(1,3) = pose_params[i][4];
+            pose_window[i].at<double>(2,3) = pose_params[i][5];
+        }
+    }
+
     void drawPaths(int i, const std::vector<cv::Point2d> &gt_path, const std::vector<cv::Point2d> &est_path) {
         auto draw_path = [&](const std::vector<cv::Point2d> &path, const cv::Scalar &color) {
             cv::line(canvas,
@@ -278,6 +418,7 @@ private:
         cv::imshow("VO Path", display);
         cv::waitKey(1);    
     }
+
 
     void savePaths(
         const std::string &gt_file, 
