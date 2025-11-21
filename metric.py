@@ -44,9 +44,9 @@ def kitti_drift(gt, est, segment_lengths=[100]):
     return results
 
 if __name__ == '__main__':
-    gt = np.loadtxt("./build/gt_path.txt")        # shape Nx2
-    est = np.loadtxt("./build/est_path.txt")      # shape Nx2
-    scale = np.loadtxt("./build/scale.txt")      # shape Nx2
+    gt = np.loadtxt("./results/matching/gt_path.txt")        # shape Nx2
+    est = np.loadtxt("./results/matching/est_path.txt")      # shape Nx2
+    scale = np.loadtxt("./results/matching/scale.txt")      # shape Nx2
     assert gt.shape == est.shape
 
     ate, ates = compute_ate(gt, est)
@@ -58,17 +58,27 @@ if __name__ == '__main__':
     kitti = kitti_drift(gt, est, segment_lengths=[50, 100, 200])
     print("KITTI-style drift:", kitti)
 
-    fig, axes = plt.subplots(2, 2)
+    fig1, axes1 = plt.subplots(2, 2)
 
-    axes[0, 0].plot(np.arange(len(gt)), ates)
-    axes[0, 0].set_title(f"ATE RMSE: {ate:.2f}")
+    axes1[0, 0].plot(np.arange(len(gt)), ates)
+    axes1[0, 0].set_title(f"ATE RMSE: {ate:.2f}")
     
-    axes[0, 1].plot(np.arange(1, len(gt)), rpes)
-    axes[0, 1].set_title(f"RPE RMSE: {rpe:.2f}")
+    axes1[0, 1].plot(np.arange(1, len(gt)), rpes)
+    axes1[0, 1].set_title(f"RPE RMSE: {rpe:.2f}")
 
-    axes[1, 0].plot(np.arange(1, len(gt)), scale_drift)
-    axes[1, 0].set_title(f"Scale Drift Avg: {avg_scale_drift:.2f}")
+    axes1[1, 0].plot(np.arange(1, len(gt)), scale_drift)
+    axes1[1, 0].set_title(f"Scale Drift Avg: {avg_scale_drift:.2f}")
     
-    fig.suptitle("Metrics")
+    fig1.suptitle("Metrics")
     plt.tight_layout()
+
+    fig2, axes2 = plt.subplots()
+    axes2.set_xlabel("X")
+    axes2.set_ylabel("Z")
+    axes2.set_title("Path Visualization")
+    axes2.plot([p[0] for p in gt], [p[1] for p in gt], 'g-', label='Ground Truth')
+    axes2.plot([p[0] for p in est], [p[1] for p in est], 'r-', label='Estimated')
+    axes2.legend()
+    axes2.relim()           
+
     plt.show()

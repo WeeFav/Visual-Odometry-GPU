@@ -68,14 +68,14 @@ struct ReprojectionError {
 
 // --- Helper functions ---
 
-// Extract R (3x3) and t (3x1) from a 4x4 pose matrix (world->camera): X_cam = R*X_world + t
+// Extract R (3x3) and t (3x1) from a 4x4 pose matrix
 inline void extract_R_t_from_pose(const cv::Mat& pose4x4, cv::Mat& R, cv::Mat& t) {
     CV_Assert(pose4x4.rows == 4 && pose4x4.cols == 4 && pose4x4.type() == CV_64F);
     R = pose4x4(cv::Range(0,3), cv::Range(0,3)).clone();
     t = pose4x4(cv::Range(0,3), cv::Range(3,4)).clone();
 }
 
-// Compose a 4x4 pose from R and t (R 3x3, t 3x1) world->camera
+// Compose a 4x4 pose from R and t (R 3x3, t 3x1)
 inline cv::Mat compose_pose_from_R_t(const cv::Mat& R, const cv::Mat& t) {
     cv::Mat pose = cv::Mat::eye(4,4,CV_64F);
     R.copyTo(pose(cv::Range(0,3), cv::Range(0,3)));
@@ -196,9 +196,8 @@ public:
                 R.copyTo(T(cv::Range(0, 3), cv::Range(0, 3)));
                 t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
                 T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
-                relative_transform_window.push_back(T.clone());
 
-                cur_pose = T * cur_pose; // camera to world
+                cur_pose = prev_pose * T.inv();
 
                 // *** Bundle Adjustment *** //
                 pose_window.push_back(cur_pose.clone()); // Add current pose
@@ -221,35 +220,33 @@ public:
                 observations_window.pop_front();
                 imgs_window.pop_front();
             }
-            if (relative_transform_window.size() > WINDOW_SIZE - 1) {
-                relative_transform_window.pop_front();
-            }
 
             // Run BA every 10 frames
             if (i % 10 == 0 && pose_window.size() == WINDOW_SIZE) {
                 run_bundle_adjustment();
             }
             
-            cur_pose = pose_window.back();
-            cv::Mat world_to_cam = cur_pose.inv(); // world to camera
-
             gt_path.push_back(cv::Point2d(gt_pose.at<double>(0, 3), gt_pose.at<double>(2, 3)));
+            
+            cur_pose = pose_window.back();
             est_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
-            opt_path.push_back(cv::Point2d(cur_pose.at<double>(0, 3), cur_pose.at<double>(2, 3)));
+
             if (i % 10 == 0) {
-                int N = opt_path.size();
+                int N = est_path.size();
                 if (N >= WINDOW_SIZE) {
                     for (int k = 0; k < WINDOW_SIZE; k++) {
                         cv::Mat pose = pose_window[k];
                         double x = pose.at<double>(0, 3);
                         double z = pose.at<double>(2, 3);
-                        opt_path[N - WINDOW_SIZE + k] = cv::Point2d(x, z);
+                        est_path[N - WINDOW_SIZE + k] = cv::Point2d(x, z);
                     }
                 }
             }
 
+            prev_pose = cur_pose.clone();
+            
             // Draw paths
-            drawPaths(i, gt_path, est_path, opt_path);
+            drawPaths(i, gt_path, est_path);
         }
 
         cv::waitKey(0);
@@ -268,7 +265,7 @@ private:
     cv::Mat img1;
     std::vector<cv::Point2f> pts1;
     std::vector<cv::Point3f> prev_points_3d;
-    cv::Mat cur_pose; // camera pose C
+    cv::Mat prev_pose, cur_pose; // camera pose C, camera to world
 
     // Path Visualization
     int w = 1000, h = 1000;
@@ -279,8 +276,6 @@ private:
     std::deque<cv::Mat> pose_window; // last N poses
     std::deque<std::vector<cv::Point2f>> observations_window; // 2D matches per frame
     std::deque<cv::Mat> imgs_window;
-    std::deque<cv::Mat> relative_transform_window;
-
 
     void readPoses(const std::string& KITTI_DIR, const std::string& seq) {
         std::ifstream pose_file(KITTI_DIR + "/data_odometry_poses/dataset/poses/" + seq + ".txt");
@@ -497,26 +492,21 @@ private:
     }
 
     // --- Build landmarks by triangulating from frames 0 and 1 and attaching observations from tracks ---
-    std::vector<Landmark> buildLandmarksFromFirstTwoFramesAndTracks(std::vector<cv::Point2f> keypoints0)
+    bool buildLandmarksFromFirstTwoFramesAndTracks(std::vector<cv::Point2f> keypoints0, std::vector<Landmark> &landmarks)
     {
         std::vector<std::vector<std::pair<int, cv::Point2f>>> tracks = trackPointsAcrossWindow(keypoints0);
         
         // Build projection matrices for frame 0 and 1
 
         cv::Mat R0, t0, R1, t1;
-        extract_R_t_from_pose(pose_window[0], R0, t0);
-        extract_R_t_from_pose(pose_window[1], R1, t1);
+        // pose_window is cam to world, but projection matrix need world to cam
+        extract_R_t_from_pose(pose_window[0].inv(), R0, t0);
+        extract_R_t_from_pose(pose_window[1].inv(), R1, t1);
         cv::Mat P0 = buildProjection(K, R0, t0);
         cv::Mat P1 = buildProjection(K, R1, t1);
-        
-        // cv::Mat P0 = cv::Mat::eye(3, 4, CV_64F); // first camera as origin
-        // P0 = K * P0;
-        // cv::Mat R, t;
-        // extract_R_t_from_pose(relative_transform_window[0], R, t);
-        // cv::Mat Rt;
-        // cv::hconcat(R, t, Rt);
-        // cv::Mat P1 = K * Rt; // second camera relative to first
 
+        double baseline = cv::norm(t0 - t1);
+        if (baseline < 0.1 || baseline > 100) return false;
 
         // Prepare vectors for triangulation: only for points that have a valid observation in frame 1
         std::vector<cv::Point2f> pts0_for_tri, pts1_for_tri;
@@ -549,11 +539,11 @@ private:
         //             << pts1_for_tri[j] << std::endl;
         // }
 
+        // points_3d is in world frame
         std::vector<cv::Point3d> points_3d = triangulatePointsLinear(pts0_for_tri, pts1_for_tri, P0, P1);
         assert(points_3d.size() == original_idx_for_tri.size());
 
         // Build landmarks using 3d points from frame 0, 1 and images points across frames
-        std::vector<Landmark> landmarks;
         landmarks.reserve(points_3d.size());
         for (size_t j = 0; j < points_3d.size(); ++j) {
             cv::Point3d X = points_3d[j];
@@ -574,7 +564,7 @@ private:
             landmarks.push_back(lm);
         }
 
-        return landmarks;
+        return true;
     }
 
     void run_bundle_adjustment()
@@ -601,7 +591,12 @@ private:
         }
 
         // Build landmarks by tracking & triangulation
-        std::vector<Landmark> landmarks = buildLandmarksFromFirstTwoFramesAndTracks(keypoints0);
+        std::vector<Landmark> landmarks;
+        if (!buildLandmarksFromFirstTwoFramesAndTracks(keypoints0, landmarks))
+        {
+            std::cerr << "buildLandmarksFromFirstTwoFramesAndTracks failed.\n";
+            return;
+        }
         if (landmarks.empty()) {
             std::cerr << "No landmarks after triangulation.\n";
             return;
@@ -614,7 +609,8 @@ private:
         std::vector<std::array<double,6>> pose_params(WINDOW_SIZE);
         for (int i = 0; i < WINDOW_SIZE; ++i) {
             cv::Mat R, t;
-            extract_R_t_from_pose(pose_window[i], R, t);
+            // we need world to cam because we want to project 3d world points to camera 
+            extract_R_t_from_pose(pose_window[i].inv(), R, t);
             cv::Mat rvec;
             cv::Rodrigues(R, rvec); // rvec is 3x1 rotation vector (angle-axis)
             pose_params[i][0] = rvec.at<double>(0,0);
@@ -668,23 +664,52 @@ private:
         // Solve
         ceres::Solver::Options options;
         options.linear_solver_type = ceres::SPARSE_SCHUR;
-        options.minimizer_progress_to_stdout = true;
+        // options.minimizer_progress_to_stdout = true;
         options.max_num_iterations = 200;
         options.num_threads = 4;
 
         ceres::Solver::Summary summary;
         ceres::Solve(options, &problem, &summary);
 
-        std::cout << summary.FullReport() << std::endl;
+        // std::cout << summary.FullReport() << std::endl;
 
-        // Write optimized poses back into pose_window
-        for (int i = 0; i < WINDOW_SIZE; ++i) {
-            cv::Mat rvec = (cv::Mat_<double>(3,1) << pose_params[i][0], pose_params[i][1], pose_params[i][2]);
-            cv::Mat R;
-            cv::Rodrigues(rvec, R);
-            cv::Mat t = (cv::Mat_<double>(3,1) << pose_params[i][3], pose_params[i][4], pose_params[i][5]);
-            cv::Mat newPose = compose_pose_from_R_t(R, t);
-            pose_window[i] = newPose.clone();
+        if (summary.termination_type == ceres::CONVERGENCE)
+        {
+            // Write optimized poses back into pose_window
+            for (int i = 0; i < WINDOW_SIZE; ++i) {
+                cv::Mat rvec = (cv::Mat_<double>(3,1) << pose_params[i][0], pose_params[i][1], pose_params[i][2]);
+                cv::Mat R;
+                cv::Rodrigues(rvec, R);
+                cv::Mat t = (cv::Mat_<double>(3,1) << pose_params[i][3], pose_params[i][4], pose_params[i][5]);
+                cv::Mat newPose = compose_pose_from_R_t(R, t);
+
+                cv::Mat oldPose = pose_window[i].inv(); // world->cam
+
+                // --- compute difference ---
+                cv::Mat R_old = oldPose(cv::Range(0,3), cv::Range(0,3));
+                cv::Mat t_old = oldPose(cv::Range(0,3), cv::Range(3,4));
+
+                cv::Mat R_diff = R * R_old.t(); // rotation difference
+                cv::Mat rvec_diff;
+                cv::Rodrigues(R_diff, rvec_diff);
+                double angle_diff = cv::norm(rvec_diff); // in radians
+
+                cv::Mat t_diff = t - t_old;
+                double trans_diff = cv::norm(t_diff);
+
+                // set thresholds
+                const double MAX_ROT_DIFF = 0.5;   // radians ~ 30 degrees
+                const double MAX_TRANS_DIFF = 50.0; // meters (or units of your system)
+
+                if (angle_diff < MAX_ROT_DIFF && trans_diff < MAX_TRANS_DIFF) {
+                    // pose_params is world to cam, so we need to invert to get cam to world                
+                    pose_window[i] = newPose.inv();
+                } else {
+                    std::cout << "Pose " << i << " differs too much. Not updating." << std::endl;
+                    std::cout << "Pose " << i << " angle_diff " << angle_diff << " trans_diff " << trans_diff << std::endl;
+                }
+
+            }
         }
 
     }
@@ -692,8 +717,7 @@ private:
     void drawPaths(
         int i, 
         const std::vector<cv::Point2d> &gt_path, 
-        const std::vector<cv::Point2d> &est_path, 
-        const std::vector<cv::Point2d> &opt_path) 
+        const std::vector<cv::Point2d> &est_path) 
     {
         auto draw_path = [&](const std::vector<cv::Point2d> &path, const cv::Scalar &color) {
             cv::line(canvas,
@@ -704,7 +728,6 @@ private:
 
         draw_path(gt_path, cv::Scalar(0, 255, 0));
         draw_path(est_path, cv::Scalar(0, 0, 255));
-        draw_path(opt_path, cv::Scalar(255, 0, 0));
         
         cv::Mat display;
         canvas.copyTo(display);  // copy current canvas

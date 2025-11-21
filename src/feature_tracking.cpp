@@ -29,6 +29,7 @@ public:
         flann = cv::makePtr<cv::FlannBasedMatcher>(indexParams, searchParams);
 
         // Load ground truth poses
+        // kitti poses are cam to world and world origin is at 0
         readPoses(KITTI_DIR, seq);
         // Load calibration
         readCalib(KITTI_DIR, seq);
@@ -71,13 +72,17 @@ public:
                                              gt_poses[i - 1](cv::Range(0, 3), cv::Range(3, 4)));
 
                 
-                // construct unscaled relative transform betwen frames
+                // construct transform from frame 1 to 2
+                // translation is unscaled, i.e. unit norm
                 cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
                 R.copyTo(T(cv::Range(0, 3), cv::Range(0, 3)));
                 t.copyTo(T(cv::Range(0, 3), cv::Range(3, 4)));
                 T(cv::Range(0, 3), cv::Range(3, 4)) *= scale;
 
-                cur_pose = prev_pose * T;
+                // Coordinate transform chaining:
+                // We have prev_pose = frame 1 to world and T = frame 1 to 2, and we want to get cur_pose = frame 2 to world
+                // So we first do frame 2 to frame 1 (T.inv) then frame 1 to world (prev_pose)
+                cur_pose = prev_pose * T.inv();
 
                 // Shift the cache: current becomes previous
                 img1 = img2.clone();
