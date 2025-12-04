@@ -40,12 +40,28 @@ Comparison between matching the 3D points produced from frame t-2, t-1 and t-1, 
 
 Left matched (69.8625 seconds), Right unmatched (50.7254 seconds)
 
-<img src="results/matching_orb_3d_correspond/path_visualization.png" alt="drawing" width="400"/>
-<img src="results/matching_orb_3d_no_correspond/path_visualization.png" alt="drawing" width="400"/>
-
-<img src="results/matching_orb_3d_correspond/metrics.png" alt="drawing" width="400"/>
-<img src="results/matching_orb_3d_no_correspond/metrics.png" alt="drawing" width="400"/>
-
+<table>
+  <tr>
+    <td align="center">
+      <b>Matched – Path</b><br>
+      <img src="results/matching_orb_3d_correspond/path_visualization.png" width="400">
+    </td>
+    <td align="center">
+      <b>Unmatched – Path</b><br>
+      <img src="results/matching_orb_3d_no_correspond/path_visualization.png" width="400">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <b>Matched – Metrics</b><br>
+      <img src="results/matching_orb_3d_correspond/metrics.png" width="400">
+    </td>
+    <td align="center">
+      <b>Unmatched – Metrics</b><br>
+      <img src="results/matching_orb_3d_no_correspond/metrics.png" width="400">
+    </td>
+  </tr>
+</table>
 
 ### Local Windowed Bundle Adjustment
 Comparison between optimization via bundle adjustment vs no optimization. The result shows bundle adjustment vs no bundle adjustment for SIFT feature tracking on kitti seq 05 for 1000 frames.
