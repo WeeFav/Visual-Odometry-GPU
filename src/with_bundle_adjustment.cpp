@@ -10,6 +10,7 @@
 #include <vector>
 #include <filesystem>
 #include <iterator>
+#include <chrono>
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
@@ -157,6 +158,8 @@ public:
         std::vector<double> gt_scale;
         std::vector<double> est_scale;
 
+        auto start = std::chrono::high_resolution_clock::now();
+
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
 
@@ -248,6 +251,10 @@ public:
             // Draw paths
             drawPaths(i, gt_path, est_path);
         }
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
 
         cv::waitKey(0);
 

@@ -1,0 +1,10 @@
+matching_sift: 121.994 seconds
+matching_orb: 52.6226 seconds
+
+tracking_sift: 16.4911 seconds
+tracking_orb: 13.8782 seconds
+
+matching_orb_3d_correspond: 69.8625 seconds
+matching_orb_3d_no_correspond: 50.7254 seconds
+
+tracking_sift_ba: 216.41 seconds

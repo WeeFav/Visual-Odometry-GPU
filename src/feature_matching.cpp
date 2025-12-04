@@ -10,6 +10,7 @@
 #include <vector>
 #include <filesystem>
 #include <iterator>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -22,10 +23,15 @@ public:
         }
         std::sort(images.begin(), images.end());
 
-        sift = cv::SIFT::create();
         
+        sift = cv::SIFT::create();
         cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::KDTreeIndexParams>(5);
         cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);
+
+        // orb = cv::ORB::create(3000);
+        // cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::LshIndexParams>(6, 12, 1);
+        // cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);  
+
         flann = cv::makePtr<cv::FlannBasedMatcher>(indexParams, searchParams);
 
         // Load ground truth poses
@@ -39,6 +45,8 @@ public:
         std::vector<cv::Point2d> est_path;
         std::vector<double> gt_scale;
         std::vector<double> est_scale;
+
+        auto start = std::chrono::high_resolution_clock::now();
 
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
@@ -89,6 +97,10 @@ public:
             drawPaths(i, gt_path, est_path);
         }
 
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
+
         cv::waitKey(0);
 
         savePaths("./gt_path.txt", "./est_path.txt", "./scale.txt", gt_path, est_path, gt_scale, est_scale);
@@ -97,6 +109,7 @@ public:
 private:
     std::vector<std::string> images;
     cv::Ptr<cv::SIFT> sift;
+    cv::Ptr<cv::ORB> orb;
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;

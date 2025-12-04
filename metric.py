@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import os 
 
 def compute_ate(gt, est):
     errors = np.linalg.norm(gt - est, axis=1)
@@ -44,9 +45,10 @@ def kitti_drift(gt, est, segment_lengths=[100]):
     return results
 
 if __name__ == '__main__':
-    gt = np.loadtxt("./results/matching/gt_path.txt")        # shape Nx2
-    est = np.loadtxt("./results/matching/est_path.txt")      # shape Nx2
-    scale = np.loadtxt("./results/matching/scale.txt")      # shape Nx2
+    folder = "./results/tracking_sift_ba"
+    gt = np.loadtxt(os.path.join(folder, "gt_path.txt"))        # shape Nx2
+    est = np.loadtxt(os.path.join(folder, "est_path.txt"))      # shape Nx2
+    scale = np.loadtxt(os.path.join(folder, "scale.txt"))      # shape Nx2
     assert gt.shape == est.shape
 
     ate, ates = compute_ate(gt, est)
@@ -81,4 +83,6 @@ if __name__ == '__main__':
     axes2.legend()
     axes2.relim()           
 
+    fig1.savefig(os.path.join(folder, "metrics.png"), dpi=300, bbox_inches='tight')
+    fig2.savefig(os.path.join(folder, "path_visualization.png"), dpi=300, bbox_inches='tight')
     plt.show()

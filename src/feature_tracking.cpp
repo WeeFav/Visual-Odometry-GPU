@@ -10,6 +10,7 @@
 #include <vector>
 #include <filesystem>
 #include <iterator>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -22,10 +23,15 @@ public:
         }
         std::sort(images.begin(), images.end());
 
-        sift = cv::SIFT::create();
         
-        cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::KDTreeIndexParams>(5);
-        cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);
+        // sift = cv::SIFT::create();
+        // cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::KDTreeIndexParams>(5);
+        // cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);
+
+        orb = cv::ORB::create(3000);
+        cv::Ptr<cv::flann::IndexParams> indexParams = cv::makePtr<cv::flann::LshIndexParams>(6, 12, 1);
+        cv::Ptr<cv::flann::SearchParams> searchParams = cv::makePtr<cv::flann::SearchParams>(50);  
+
         flann = cv::makePtr<cv::FlannBasedMatcher>(indexParams, searchParams);
 
         // Load ground truth poses
@@ -42,13 +48,15 @@ public:
         std::vector<double> est_scale;
         cv::Mat cur_pose;
 
+        auto start = std::chrono::high_resolution_clock::now();
+
         for (size_t i = 0; i < 1000 && i < images.size(); i++) {
             cv::Mat gt_pose = gt_poses[i].clone();
 
             if (i == 0) {
                 img1 = cv::imread(images[0], cv::IMREAD_GRAYSCALE);
                 std::vector<cv::KeyPoint> kp1;
-                sift->detect(img1, kp1);
+                orb->detect(img1, kp1);
                 cv::KeyPoint::convert(kp1, pts1);
                 cur_pose = gt_pose.clone();
             } else {
@@ -102,6 +110,10 @@ public:
             drawPaths(i, gt_path, est_path);
         }
 
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed = end - start;
+        std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
+
         cv::waitKey(0);
 
         savePaths("./gt_path.txt", "./est_path.txt", "./scale.txt", gt_path, est_path, gt_scale, est_scale);
@@ -110,6 +122,7 @@ public:
 private:
     std::vector<std::string> images;
     cv::Ptr<cv::SIFT> sift;
+    cv::Ptr<cv::ORB> orb;
     cv::Ptr<cv::FlannBasedMatcher> flann;
     std::vector<cv::Mat> gt_poses;
     cv::Mat K;
@@ -185,8 +198,8 @@ private:
         cv::Mat des1, des2;
         
         // Find the keypoints and descriptors
-        sift->detectAndCompute(img1, cv::noArray(), kp1, des1);
-        sift->detectAndCompute(img2, cv::noArray(), kp2, des2);
+        orb->detectAndCompute(img1, cv::noArray(), kp1, des1);
+        orb->detectAndCompute(img2, cv::noArray(), kp2, des2);
 
         std::vector<std::vector<cv::DMatch>> matches;
         flann->knnMatch(des1, des2, matches, 2);

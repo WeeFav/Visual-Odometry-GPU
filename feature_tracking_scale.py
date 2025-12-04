@@ -4,19 +4,21 @@ import cv2
 import matplotlib.pyplot as plt
 import open3d as o3d
 from tqdm import tqdm
-    
+import time
+
 class VisualOdom:
     def __init__(self, KITTI_DIR, seq):
         images_dir = f"{KITTI_DIR}/data_odometry_gray/dataset/sequences/{seq}/image_0"
         self.images = [os.path.join(images_dir, p) for p in sorted(os.listdir(images_dir))]
         
-        self.orb = cv2.ORB_create(3000)
-        self.sift = cv2.SIFT_create()
+        # self.sift = cv2.SIFT_create()
+        # FLANN_INDEX_KDTREE = 1
+        # index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
 
-        # FLANN_INDEX_LSH = 6
-        # index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
-        FLANN_INDEX_KDTREE = 1
-        index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+        self.orb = cv2.ORB_create(3000)
+        FLANN_INDEX_LSH = 6
+        index_params = dict(algorithm=FLANN_INDEX_LSH, table_number=6, key_size=12, multi_probe_level=1)
+        
         search_params = dict(checks=50)
         self.flann = cv2.FlannBasedMatcher(indexParams=index_params, searchParams=search_params)
 
@@ -35,7 +37,7 @@ class VisualOdom:
     
     def get_three_frame_matches(self, img3):
         # Find the keypoints and descriptors with ORB
-        self.kp3, self.des3 = self.sift.detectAndCompute(img3, None) # train
+        self.kp3, self.des3 = self.orb.detectAndCompute(img3, None) # train
 
         # Match frame 1-2
         matches_12 = self.flann.knnMatch(self.des1, self.des2, k=2)
@@ -221,20 +223,26 @@ class VisualOdom:
     def run(self):
         gt_path = []
         estimated_path = []
+        gt_scale = []
+        estimated_scale = []
+
+        start_time = time.perf_counter()
 
         for i, gt_pose in enumerate(tqdm(range(1000))):  
             gt_pose = self.gt_poses[i]
             
             if i == 0:
                 img1 = cv2.imread(self.images[0], cv2.IMREAD_GRAYSCALE)
-                self.kp1, self.des1 = self.sift.detectAndCompute(img1, None)
+                self.kp1, self.des1 = self.orb.detectAndCompute(img1, None)
                 cur_pose = gt_pose
             elif i == 1:
                 img2 = cv2.imread(self.images[1], cv2.IMREAD_GRAYSCALE)
-                self.kp2, self.des2 = self.sift.detectAndCompute(img2, None)
+                self.kp2, self.des2 = self.orb.detectAndCompute(img2, None)
                 self.R_12 = np.eye(3)
                 self.t_12 = np.zeros((3,1))
                 cur_pose = gt_pose
+                estimated_scale.append(1)
+                gt_scale.append(1)
             else:
                 img3 = cv2.imread(self.images[i], cv2.IMREAD_GRAYSCALE)
                 pts1, pts2, pts3 = self.get_three_frame_matches(img3)
@@ -245,8 +253,10 @@ class VisualOdom:
                 self.R_23, self.t_23, T = self.get_pose(pts2, pts3)
                 
                 scale = self.get_scale(pts1, pts2, pts3)
+                estimated_scale.append(scale)
                 
                 true_scale = np.linalg.norm(self.gt_poses[i][:3, 3] - self.gt_poses[i-1][:3, 3])
+                gt_scale.append(true_scale)
                 
                 # print("")
                 # print(scale, true_scale)
@@ -262,24 +272,45 @@ class VisualOdom:
 
             gt_path.append((gt_pose[0, 3], gt_pose[2, 3]))
             estimated_path.append((cur_pose[0, 3], cur_pose[2, 3]))
-            
-        fig, ax = plt.subplots()
-        ax.set_xlabel("X")
-        ax.set_ylabel("Z")
-        ax.set_title("Path Visualization")
-        gt_line, = ax.plot([], [], 'g-', label='Ground Truth')
-        est_line, = ax.plot([], [], 'r-', label='Estimated')
-        ax.legend()
-        gt_line.set_data([p[0] for p in gt_path], [p[1] for p in gt_path])
-        est_line.set_data([p[0] for p in estimated_path], [p[1] for p in estimated_path])
-        ax.relim()            # recompute limits
-        ax.autoscale_view()   # rescale axes
-        plt.show()
-        
 
+        elapsed_time = time.perf_counter() - start_time
+        print(f"Elapsed time: {elapsed_time:.4f} seconds")
+
+        self.save_paths("./gt_path.txt", "./est_path.txt", "./scale.txt", gt_path, estimated_path, gt_scale, estimated_scale)
+
+    def save_paths(self, gt_file, est_file, scale_file, gt_path, est_path, gt_scale, est_scale):
+        # Save ground truth path
+        with open(gt_file, "w") as f_gt:
+            for p in gt_path:
+                f_gt.write(f"{p[0]} {p[1]}\n")
+
+        # Save estimated path
+        with open(est_file, "w") as f_est:
+            for p in est_path:
+                f_est.write(f"{p[0]} {p[1]}\n")
+
+        # Save scale values
+        with open(scale_file, "w") as f_scale:
+            for g, e in zip(gt_scale, est_scale):
+                f_scale.write(f"{g} {e}\n")
+   
+
+    # fig, ax = plt.subplots()
+    # ax.set_xlabel("X")
+    # ax.set_ylabel("Z")
+    # ax.set_title("Path Visualization")
+    # gt_line, = ax.plot([], [], 'g-', label='Ground Truth')
+    # est_line, = ax.plot([], [], 'r-', label='Estimated')
+    # ax.legend()
+    # gt_line.set_data([p[0] for p in gt_path], [p[1] for p in gt_path])
+    # est_line.set_data([p[0] for p in estimated_path], [p[1] for p in estimated_path])
+    # ax.relim()            # recompute limits
+    # ax.autoscale_view()   # rescale axes
+    # plt.show()
+        
 if __name__ == '__main__':
     KITTI_DIR = "/home/d300/VO/data/kitti"
     # KITTI_DIR = "D:\Visual-Odometry-GPU\data\kitti"
-    seq = "01"
+    seq = "05"
     vo = VisualOdom(KITTI_DIR, seq)
     vo.run()
