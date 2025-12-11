@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.1)
-project(mono_vo)
+project(mono_vo CUDA CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -14,3 +14,12 @@ target_link_libraries(vo_tracking ${OpenCV_LIBS})
 
 add_executable(vo_ba src/with_bundle_adjustment.cpp)
 target_link_libraries(vo_ba ${OpenCV_LIBS} Ceres::ceres)
+
+add_executable(orb 
+    src/orb.cpp
+    src/GaussianBlur.cu
+)
+target_link_libraries(orb ${OpenCV_LIBS})
+target_include_directories(orb PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
