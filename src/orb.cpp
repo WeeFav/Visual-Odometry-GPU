@@ -5,8 +5,6 @@
 #include "GaussianBlur.cuh"
 #include "Fast.cuh"
 
-struct Keypoint { int x, y; };
-
 class OrientedFAST {
 public:
     OrientedFAST(int nfeatures=500, int threshold=50, int n=9, int nms_window=1, int patch_size=9) {
@@ -20,7 +18,18 @@ public:
     void detect(const cv::Mat& image) {
         std::vector<Keypoint> keypoints;
 
-        Fast(image, keypoints, nfeatures, threshold, n);
+        Fast(image, keypoints, threshold, n, nms_window, nfeatures);
+
+        std::cout << "size " << keypoints.size() << std::endl;
+
+        cv::Mat image_color;
+        cv::cvtColor(image, image_color, cv::COLOR_GRAY2BGR);
+        for (auto kp : keypoints) {
+            cv::circle(image_color, cv::Point(kp.x, kp.y), 1, cv::Scalar(0, 255, 0));
+        }
+        cv::imshow("Fast", image_color);
+        cv::waitKey(0);
+
     }
 
 private:
@@ -79,8 +88,11 @@ private:
 };
 
 int main() {
-    cv::Mat image = cv::imread("/home/d300/VO/data/kitti/data_odometry_gray/dataset/sequences/00/image_0/000000.png", cv::IMREAD_GRAYSCALE);
-    ORB orb;
-    orb.detectAndCompute(image);
+    cv::Mat image = cv::imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv::IMREAD_GRAYSCALE);
+    // ORB orb;
+    // orb.detectAndCompute(image);
+
+    OrientedFAST fast;
+    fast.detect(image);
     return 0;
 }

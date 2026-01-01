@@ -159,10 +159,11 @@ class RotatedBRIEF:
         return np.array(descriptors)
 
 if __name__ == '__main__':
-    image = cv2.imread("/home/d300/VO/data/kitti/data_odometry_gray/dataset/sequences/00/image_0/000000.png", cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv2.IMREAD_GRAYSCALE)
 
     fast = OrientedFAST()
     keypoints = fast.detect(image)
+    print(len(keypoints))
     orientations = fast.keypoint_orientations(image, keypoints)
 
     brief = RotatedBRIEF()

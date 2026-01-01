@@ -18,8 +18,18 @@ target_link_libraries(vo_ba ${OpenCV_LIBS} Ceres::ceres)
 add_executable(orb 
     src/orb.cpp
     src/GaussianBlur.cu
+    src/Fast.cu
 )
 target_link_libraries(orb ${OpenCV_LIBS})
 target_include_directories(orb PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+add_executable(fast 
+    src/fast.cpp
+    src/Fast.cu
+)
+target_link_libraries(fast ${OpenCV_LIBS})
+target_include_directories(fast PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
