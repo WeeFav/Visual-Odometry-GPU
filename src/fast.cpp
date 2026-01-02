@@ -130,10 +130,57 @@ void FAST_detect(
     }
 }
 
+void keypoint_orientations(
+    const cv::Mat& image,
+    const std::vector<cv::Point2i>& keypoints,
+    std::vector<float>& orientations,
+    int patch_size
+) {
+    int patch_radius = patch_size / 2;
+
+    // Ensure grayscale float or uchar image
+    CV_Assert(image.channels() == 1);
+
+    for (const auto& kp : keypoints) {
+        int x = kp.x;
+        int y = kp.y;
+
+        // Skip keypoints too close to border
+        if (x - patch_radius < 0 || x + patch_radius >= image.cols ||
+            y - patch_radius < 0 || y + patch_radius >= image.rows) {
+            continue;
+        }
+
+        float m_10 = 0.0f;
+        float m_01 = 0.0f;
+        float m_00 = 0.0f;
+
+        for (int r = -patch_radius; r <= patch_radius; ++r) {
+            for (int c = -patch_radius; c <= patch_radius; ++c) {
+                float intensity;
+
+                if (image.type() == CV_8U) {
+                    intensity = static_cast<float>(image.at<uchar>(y + r, x + c));
+                } else {
+                    intensity = image.at<float>(y + r, x + c);
+                }
+
+                m_10 += c * intensity;
+                m_01 += r * intensity;
+                m_00 += intensity;
+            }
+        }
+
+        float angle = std::atan2(m_01, m_10);
+        orientations.push_back(angle);
+    }
+}
+
 int main() {
     cv::Mat image = cv::imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv::IMREAD_GRAYSCALE);
     std::vector<Keypoint> keypoints_cpu;
     std::vector<Keypoint> keypoints_gpu;
+    std::vector<float> orientations_cpu;
 
     int threshold = 50;
     int n = 9;
@@ -141,15 +188,19 @@ int main() {
     int nfeatures = 3000;
 
     FAST_detect(image, keypoints_cpu, threshold, n, nms_window, nfeatures);
-    Fast(image, keypoints_gpu, threshold, n, nms_window, nfeatures);
+    int kp_count = Fast(image, keypoints_gpu, threshold, n, nms_window, nfeatures);
 
+    // keypoint_orientations(image, keypoints_cpu, );
+    
     // cv::Mat diff;
     // cv::compare(scores_cpu, scores_gpu, diff, cv::CmpTypes::CMP_NE);
     // int same = cv::countNonZero(diff.reshape(1)) == 0;
     // std::cout << (same ? "Same" : "Different") << std::endl;
 
-    std::cout << (keypoints_cpu.size() == keypoints_gpu.size() ? "Same" : "Different") << std::endl;
-    std::cout << (keypoints_cpu.size()) << std::endl;
-    std::cout << (keypoints_gpu.size()) << std::endl;
+    // std::cout << (keypoints_cpu.size() == kp_count ? "Same" : "Different") << std::endl;
+    // std::cout << (keypoints_cpu.size()) << std::endl;
+    // std::cout << kp_count << std::endl;
+
+
 
 }

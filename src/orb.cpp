@@ -7,7 +7,7 @@
 
 class OrientedFAST {
 public:
-    OrientedFAST(int nfeatures=500, int threshold=50, int n=9, int nms_window=1, int patch_size=9) {
+    OrientedFAST(int nfeatures=3000, int threshold=50, int n=9, int nms_window=3, int patch_size=9) {
         this->nfeatures = nfeatures;
         this->threshold = threshold;
         this->n = n;
@@ -15,21 +15,17 @@ public:
         this->patch_size = patch_size;
     }
 
-    void detect(const cv::Mat& image) {
+    std::vector<Keypoint> detect(const cv::Mat& image) {
         std::vector<Keypoint> keypoints;
+        int kp_count = Fast(image, keypoints, threshold, n, nms_window, nfeatures);
+        keypoints.resize(kp_count);
+        return keypoints;
+    }
 
-        Fast(image, keypoints, threshold, n, nms_window, nfeatures);
-
-        std::cout << "size " << keypoints.size() << std::endl;
-
-        cv::Mat image_color;
-        cv::cvtColor(image, image_color, cv::COLOR_GRAY2BGR);
-        for (auto kp : keypoints) {
-            cv::circle(image_color, cv::Point(kp.x, kp.y), 1, cv::Scalar(0, 255, 0));
-        }
-        cv::imshow("Fast", image_color);
-        cv::waitKey(0);
-
+    std::vector<float> compute_orientations(const cv::Mat& image, std::vector<Keypoint>& keypoints) {
+        std::vector<float> orientations;
+        Orientations(image, keypoints, orientations, patch_size);
+        return orientations;
     }
 
 private:
@@ -93,6 +89,32 @@ int main() {
     // orb.detectAndCompute(image);
 
     OrientedFAST fast;
-    fast.detect(image);
+    std::vector<Keypoint> keypoints = fast.detect(image);
+    std::vector<float> orientations = fast.compute_orientations(image, keypoints);
+
+    std::cout << orientations[0] << std::endl;
+    std::cout << orientations[1] << std::endl;
+    std::cout << orientations[2] << std::endl;
+    std::cout << orientations[10] << std::endl;
+    std::cout << orientations[11] << std::endl;
+    std::cout << orientations[12] << std::endl;
+    std::cout << orientations[20] << std::endl;
+    std::cout << orientations[21] << std::endl;
+    std::cout << orientations[22] << std::endl;
+    
+    cv::Mat image_color;
+    cv::cvtColor(image, image_color, cv::COLOR_GRAY2BGR);
+    for (int i=0; i<keypoints.size(); i++) {
+        int x = keypoints[i].x;
+        int y = keypoints[i].y;
+        float dx = 10 * std::cos(orientations[i]);
+        float dy = 10 * std::sin(orientations[i]);
+        cv::circle(image_color, cv::Point(x, y), 3, cv::Scalar(0, 255, 0), 1);
+        cv::arrowedLine(image_color, cv::Point(x, y), cv::Point(static_cast<int>(x + dx), static_cast<int>(y + dy)), (0, 0, 255), 1, 8, 0, 0.3);
+    }
+    cv::imshow("Fast", image_color);
+    cv::waitKey(0);
+
     return 0;
+
 }

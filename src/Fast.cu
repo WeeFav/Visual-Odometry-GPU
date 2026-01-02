@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <iostream>
 #include <opencv2/opencv.hpp>
+#include "orb.hpp"
 
 // error checking macro
 #define cudaCheckErrors(msg) \
@@ -14,8 +15,6 @@
             exit(1); \
         } \
     } while (0)
-
-struct Keypoint { int x, y; };
 
 const int block_size = 16; // all threads in the block participates in loading input into shared memory and compute ouput. some threads need to additionally load halo cells
 const int RADIUS = 3;
@@ -206,13 +205,6 @@ __global__ void d_Fast(
 
     // write score to score image
     scores[idy * width + idx] = score;
-    
-    // // append keypoint atomically (check capacity)
-    // int index = atomicAdd(kp_count, 1);
-    // if (index < nfeatures) {
-    //     keypoints[index].x = idx;
-    //     keypoints[index].y = idy;
-    // }
 }
 
 __global__ void d_NMS(
@@ -244,10 +236,12 @@ __global__ void d_NMS(
 
     score_tile[sy * shared_width + sx] = val;
 
+    int gx, gy;
+
     // load halo
     if (threadIdx.x < NMS_RADIUS) {
         // left
-        int gx = x - NMS_RADIUS;
+        gx = x - NMS_RADIUS;
         score_tile[sy * shared_width + (sx - NMS_RADIUS)] = (gx >= 0 && y < height) ? scores[y * width + gx] : 0.0f;
         
         // right
@@ -257,7 +251,7 @@ __global__ void d_NMS(
 
     if (threadIdx.y < NMS_RADIUS) {
         // top
-        int gy = y - NMS_RADIUS;
+        gy = y - NMS_RADIUS;
         score_tile[(sy - NMS_RADIUS) * shared_width + sx] = (gy >= 0 && x < width) ? scores[gy * width + x] : 0.0f;
 
         // bottom
@@ -268,16 +262,24 @@ __global__ void d_NMS(
     // corners
     if (threadIdx.x < NMS_RADIUS && threadIdx.y < NMS_RADIUS) {
         // top-left
-        score_tile[(sy - 1) * shared_width + (sx - 1)] = (x > 0 && y > 0) ? scores[(y - 1) * width + (x - 1)] : 0.0f;
+        gx = x - NMS_RADIUS;
+        gy = y - NMS_RADIUS;
+        score_tile[(sy - NMS_RADIUS) * shared_width + (sx - NMS_RADIUS)] = (gx >= 0 && gy >= 0) ? scores[gy * width + gx] : 0.0f;
 
         // top-right
-        score_tile[(sy - 1) * shared_width + (sx + block_size)] = (x + block_size < width && y > 0) ? scores[(y - 1) * width + (x + block_size)] : 0.0f;
+        gx = x + block_size;
+        gy = y - NMS_RADIUS;
+        score_tile[(sy - NMS_RADIUS) * shared_width + (sx + block_size)] = (gx < width && gy >= 0) ? scores[gy * width + gx] : 0.0f;
 
         // bottom-left
-        score_tile[(sy + block_size) * shared_width + (sx - 1)] = (x > 0 && y + block_size < height) ? scores[(y + block_size) * width + (x - 1)] : 0.0f;
+        gx = x - NMS_RADIUS;
+        gy = y + block_size;
+        score_tile[(sy + block_size) * shared_width + (sx - NMS_RADIUS)] = (gx >= 0 && gy < height) ? scores[gy * width + gx] : 0.0f;
 
         // bottom-right
-        score_tile[(sy + block_size) * shared_width + (sx + block_size)] = (x + block_size < width && y + block_size < height) ? scores[(y + block_size) * width + (x + block_size)] : 0.0f;
+        gx = x + block_size;
+        gy = y + block_size;
+        score_tile[(sy + block_size) * shared_width + (sx + block_size)] = (gx < width && gy < height) ? scores[gy * width + gx] : 0.0f;
     }
 
     __syncthreads();
@@ -295,7 +297,7 @@ __global__ void d_NMS(
         #pragma unroll
         for (int dx = -NMS_RADIUS; dx <= NMS_RADIUS; ++dx) {
             if (dx == 0 && dy == 0) continue; // center pixel
-            if (score_tile[(sy + dy) * shared_width + (sx + dx)] >= val) {
+            if (score_tile[(sy + dy) * shared_width + (sx + dx)] > val) {
                 is_max = false;
                 break;
             }
@@ -313,7 +315,7 @@ __global__ void d_NMS(
     }
 }
 
-void Fast(const cv::Mat& image, std::vector<Keypoint>& keypoints, int threshold, int n, int nms_window, int nfeatures) {
+int Fast(const cv::Mat& image, std::vector<Keypoint>& keypoints, int threshold, int n, int nms_window, int nfeatures) {
     int width = image.cols;
     int height = image.rows;
 
@@ -365,7 +367,11 @@ void Fast(const cv::Mat& image, std::vector<Keypoint>& keypoints, int threshold,
     cudaCheckErrors("kernel launch failure");
 
     // Copy output from device to host
+    int h_kp_count = 0;
     keypoints.resize(nfeatures);
     cudaMemcpy(keypoints.data(), d_keypoints, nfeatures*sizeof(Keypoint), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&h_kp_count, d_kp_count, sizeof(int), cudaMemcpyDeviceToHost);
     cudaCheckErrors("cudaMemcpy D2H failure");
+
+    return h_kp_count;
 }

@@ -74,6 +74,7 @@ class OrientedFAST():
         for x, y in keypoints:
             # Skip keypoints too close to border
             if x - patch_radius < 0 or x + patch_radius >= image.shape[1] or y - patch_radius < 0 or y + patch_radius >= image.shape[0]:
+                orientations.append(0)
                 continue
 
             patch = image[y-patch_radius:y+patch_radius+1, x-patch_radius:x+patch_radius+1].astype(np.float32)
@@ -87,7 +88,7 @@ class OrientedFAST():
                     m_01 += dy * patch[r, c]
                     m_00 += patch[r, c]
 
-            angle = np.arctan2(m_01 / (m_00 + 1e-12), m_10 / (m_00 + 1e-12))
+            angle = np.arctan2(m_01, m_10)
             orientations.append(angle)
 
         return np.array(orientations)
@@ -166,8 +167,8 @@ if __name__ == '__main__':
     print(len(keypoints))
     orientations = fast.keypoint_orientations(image, keypoints)
 
-    brief = RotatedBRIEF()
-    descriptors = brief.compute(image, keypoints, orientations)
+    # brief = RotatedBRIEF()
+    # descriptors = brief.compute(image, keypoints, orientations)
     
     img_color = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     for [x, y], angle in zip(keypoints, orientations):
@@ -176,11 +177,11 @@ if __name__ == '__main__':
         cv2.circle(img_color, (int(x), int(y)), 3, (0, 0, 255), 1)
         cv2.arrowedLine(img_color, (int(x), int(y)), (int(x + dx), int(y + dy)), (0, 0, 255), 1, tipLength=0.3)
 
-    fast = cv2.FastFeatureDetector_create(threshold=50, nonmaxSuppression=True)
-    keypoints = fast.detect(image, None)
-    output_image = cv2.drawKeypoints(image, keypoints, None, color=(0, 255, 0))
+    # fast = cv2.FastFeatureDetector_create(threshold=50, nonmaxSuppression=True)
+    # keypoints = fast.detect(image, None)
+    # output_image = cv2.drawKeypoints(image, keypoints, None, color=(0, 255, 0))
     
     cv2.imshow('FAST Corners', img_color)
-    cv2.imshow("FAST Keypoints", output_image)
+    # cv2.imshow("FAST Keypoints", output_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
