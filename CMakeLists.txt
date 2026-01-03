@@ -20,6 +20,7 @@ add_executable(orb
     src/GaussianBlur.cu
     src/Fast.cu
     src/Orientations.cu
+    src/Brief.cu
 )
 target_link_libraries(orb ${OpenCV_LIBS})
 target_include_directories(orb PRIVATE

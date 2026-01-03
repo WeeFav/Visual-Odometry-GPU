@@ -62,7 +62,7 @@ __global__ void d_Orientations(
     orientations[idx] = atan2f(m01, m10);
 }
 
-void Orientations(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& orientations, int patch_size) {
+void Orientations(const cv::Mat& image, const std::vector<Keypoint>& keypoints, std::vector<float>& orientations, int patch_size) {
     int width = image.cols;
     int height = image.rows;
 
@@ -72,7 +72,7 @@ void Orientations(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::v
     float h_image[height * width];
     std::memcpy(h_image, img_float.ptr<float>(), height * width * sizeof(float));
 
-    Keypoint* h_keypoints = keypoints.data();
+    const Keypoint* h_keypoints = keypoints.data();
 
     // Allocate device memory and copy input data over to GPU
     float *d_image, *d_orientations;

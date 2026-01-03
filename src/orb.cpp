@@ -4,6 +4,7 @@
 
 #include "GaussianBlur.cuh"
 #include "Fast.cuh"
+#include "Brief.cuh"
 
 class OrientedFAST {
 public:
@@ -22,7 +23,7 @@ public:
         return keypoints;
     }
 
-    std::vector<float> compute_orientations(const cv::Mat& image, std::vector<Keypoint>& keypoints) {
+    std::vector<float> compute_orientations(const cv::Mat& image, const std::vector<Keypoint>& keypoints) {
         std::vector<float> orientations;
         Orientations(image, keypoints, orientations, patch_size);
         return orientations;
@@ -34,7 +35,23 @@ private:
     int n;
     int nms_window;
     int patch_size;
+};
 
+class RotatedBRIEF {
+public:
+    RotatedBRIEF() {
+        this->n_bits = 256;
+        this->patch_size = 31;
+    }
+
+    std::vector<ORBDescriptor> compute(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations) {
+        std::vector<ORBDescriptor> descriptors;
+        Brief(image, keypoints, orientations, descriptors, n_bits, patch_size);
+        return descriptors;
+    }
+private:
+    int n_bits;
+    int patch_size;
 };
 
 class ORB {
@@ -50,7 +67,7 @@ public:
         std::cout << "nlevels: " << nlevels << std::endl;
     }
 
-    void detectAndCompute(const cv::Mat& image) {
+    void detectAndCompute(const cv::Mat& image, std::vector<Keypoint> keypoints, std::vector<ORBDescriptor> descriptors) {
         buildPyramid(image);
     }
 
@@ -91,16 +108,6 @@ int main() {
     OrientedFAST fast;
     std::vector<Keypoint> keypoints = fast.detect(image);
     std::vector<float> orientations = fast.compute_orientations(image, keypoints);
-
-    std::cout << orientations[0] << std::endl;
-    std::cout << orientations[1] << std::endl;
-    std::cout << orientations[2] << std::endl;
-    std::cout << orientations[10] << std::endl;
-    std::cout << orientations[11] << std::endl;
-    std::cout << orientations[12] << std::endl;
-    std::cout << orientations[20] << std::endl;
-    std::cout << orientations[21] << std::endl;
-    std::cout << orientations[22] << std::endl;
     
     cv::Mat image_color;
     cv::cvtColor(image, image_color, cv::COLOR_GRAY2BGR);
@@ -115,6 +122,8 @@ int main() {
     cv::imshow("Fast", image_color);
     cv::waitKey(0);
 
-    return 0;
+    RotatedBRIEF brief;
+    std::vector<ORBDescriptor> descriptors = brief.compute(image, keypoints, orientations);
 
+    return 0;
 }
