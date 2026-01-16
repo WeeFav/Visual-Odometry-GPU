@@ -56,7 +56,7 @@ __global__ void d_Brief(
     float cos = cosf(angle);
     float sin = sinf(angle);
 
-    ORBDescriptor desc;
+    ORBDescriptor desc{};
 
     #pragma unroll
     for (int i = 0; i < 256; i++) {
@@ -91,9 +91,10 @@ __global__ void d_Brief(
             desc.data[i >> 3] |= (1 << (i & 7));
         }
     }
+    descriptors[idx] = desc;
 }
 
-void Brief(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations, std::vector<ORBDescriptor> descriptors, int n_bits, int patch_size) {
+void Brief(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations, std::vector<ORBDescriptor> &descriptors, int n_bits, int patch_size) {
     int width = image.cols + 1; // integral image will have extra padding
     int height = image.rows + 1;
 

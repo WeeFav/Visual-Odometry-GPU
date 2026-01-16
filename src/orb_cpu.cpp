@@ -1,7 +1,9 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include <cmath>
-#include "Fast.cuh"
+#include "orb.hpp"
+#include "orb_cpu.hpp"
+#include "orb_pattern.hpp"
 
 std::vector<cv::Point> circle_offsets = {
     { 0, -3}, { 1, -3}, { 2, -2}, { 3, -1},
@@ -10,15 +12,17 @@ std::vector<cv::Point> circle_offsets = {
     {-3,  0}, {-3, -1}, {-2, -2}, {-1, -3}
 };
 
-void FAST_detect(
-    const cv::Mat& image,
-    std::vector<Keypoint>& keypoints,
-    int threshold,
-    int n,
-    int nms_window,
-    int nfeatures
-) 
-{
+OrientedFASTCPU::OrientedFASTCPU(int nfeatures, int threshold, int n, int nms_window, int patch_size) {
+    this->nfeatures = nfeatures;
+    this->threshold = threshold;
+    this->n = n;
+    this->nms_window = nms_window;
+    this->patch_size = patch_size;
+}
+
+std::vector<Keypoint> OrientedFASTCPU::detect(const cv::Mat& image) {
+    std::vector<Keypoint> keypoints;
+
     CV_Assert(image.type() == CV_8UC1);
     CV_Assert(circle_offsets.size() == 16);
 
@@ -128,14 +132,13 @@ void FAST_detect(
             }
         }
     }
+
+    return keypoints;
 }
 
-void keypoint_orientations(
-    const cv::Mat& image,
-    const std::vector<cv::Point2i>& keypoints,
-    std::vector<float>& orientations,
-    int patch_size
-) {
+std::vector<float> OrientedFASTCPU::compute_orientations(const cv::Mat& image, const std::vector<Keypoint>& keypoints) {
+    std::vector<float> orientations;
+    
     int patch_radius = patch_size / 2;
 
     // Ensure grayscale float or uchar image
@@ -148,6 +151,7 @@ void keypoint_orientations(
         // Skip keypoints too close to border
         if (x - patch_radius < 0 || x + patch_radius >= image.cols ||
             y - patch_radius < 0 || y + patch_radius >= image.rows) {
+            orientations.push_back(0.0f);
             continue;
         }
 
@@ -173,34 +177,121 @@ void keypoint_orientations(
 
         float angle = std::atan2(m_01, m_10);
         orientations.push_back(angle);
-    }
+    }    
+    
+    return orientations;
 }
 
-int main() {
-    cv::Mat image = cv::imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv::IMREAD_GRAYSCALE);
-    std::vector<Keypoint> keypoints_cpu;
-    std::vector<Keypoint> keypoints_gpu;
-    std::vector<float> orientations_cpu;
+RotatedBRIEFCPU::RotatedBRIEFCPU() {
+    this->n_bits = 256;
+    this->patch_size = 31;
+}
 
-    int threshold = 50;
-    int n = 9;
-    int nms_window = 3;
-    int nfeatures = 3000;
+int RotatedBRIEFCPU::sum5x5(const cv::Mat &integral, int x, int y, int width)
+{
+    int x0 = x - 2;
+    int y0 = y - 2;
+    int x1 = x + 3;
+    int y1 = y + 3;
 
-    FAST_detect(image, keypoints_cpu, threshold, n, nms_window, nfeatures);
-    int kp_count = Fast(image, keypoints_gpu, threshold, n, nms_window, nfeatures);
+    return integral.at<int>(y1, x1)
+         + integral.at<int>(y0, x0)
+         - integral.at<int>(y0, x1)
+         - integral.at<int>(y1, x0);
+}
 
-    // keypoint_orientations(image, keypoints_cpu, );
-    
-    // cv::Mat diff;
-    // cv::compare(scores_cpu, scores_gpu, diff, cv::CmpTypes::CMP_NE);
-    // int same = cv::countNonZero(diff.reshape(1)) == 0;
-    // std::cout << (same ? "Same" : "Different") << std::endl;
+std::vector<ORBDescriptor> RotatedBRIEFCPU::compute(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations) {
+    std::vector<ORBDescriptor> descriptors;
+    descriptors.resize(keypoints.size());
 
-    // std::cout << (keypoints_cpu.size() == kp_count ? "Same" : "Different") << std::endl;
-    // std::cout << (keypoints_cpu.size()) << std::endl;
-    // std::cout << kp_count << std::endl;
+    cv::Mat integral;
+    cv::integral(image, integral);
 
+    const int height = integral.rows;
+    const int width = integral.cols;
 
+    for (int idx=0; idx<keypoints.size(); idx++) {
+        const Keypoint& kp = keypoints[idx];
+        float angle = orientations[idx];
 
+        float c = std::cos(angle);
+        float s = std::sin(angle);
+
+        ORBDescriptor desc{};
+
+        for (int i = 0; i < 256; i++) {
+            int x1 = bit_pattern_31_[i * 4];
+            int y1 = bit_pattern_31_[i * 4 + 1];
+            int x2 = bit_pattern_31_[i * 4 + 2];
+            int y2 = bit_pattern_31_[i * 4 + 3];
+
+            int dx1 = static_cast<int>(std::lround(c * x1 - s * y1));
+            int dy1 = static_cast<int>(std::lround(s * x1 + c * y1));
+
+            int dx2 = static_cast<int>(std::lround(c * x2 - s * y2));
+            int dy2 = static_cast<int>(std::lround(s * x2 + c * y2));
+
+            int cx1 = kp.x + dx1;
+            int cy1 = kp.y + dy1;
+            int cx2 = kp.x + dx2;
+            int cy2 = kp.y + dy2;
+
+            // Boundary check for 5x5 window
+            const int subwindow_radius = 5 / 2;
+            if (cx1 < subwindow_radius || cy1 < subwindow_radius ||
+                cx1 > width - subwindow_radius || cy1 > height - subwindow_radius ||
+                cx2 < subwindow_radius || cy2 < subwindow_radius ||
+                cx2 > width - subwindow_radius || cy2 > height - subwindow_radius)
+                continue;
+
+            int s1 = sum5x5(integral, cx1, cy1, width);
+            int s2 = sum5x5(integral, cx2, cy2, width);
+
+            if (s1 < s2) {
+                desc.data[i >> 3] |= (1u << (i & 7));
+            }
+        }
+        descriptors[idx] = desc;
+    }
+
+    return descriptors;
+}
+
+ORBCPU::ORBCPU(int nfeatures, float scaleFactor, int nlevels) {
+    this->nfeatures = nfeatures;
+    this->scaleFactor = scaleFactor;
+    this->nlevels = nlevels;
+
+    pyramid.resize(nlevels);
+
+    std::cout << "scaleFactor: " << scaleFactor << std::endl;
+    std::cout << "nlevels: " << nlevels << std::endl;
+}
+
+void ORBCPU::detectAndCompute(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& orientations, std::vector<ORBDescriptor>& descriptors) {
+    keypoints = fast.detect(image);
+    std::cout << keypoints.size() << std::endl;
+    orientations = fast.compute_orientations(image, keypoints);
+    descriptors = brief.compute(image, keypoints, orientations);
+}
+
+void ORBCPU::buildPyramid(const cv::Mat& image) {
+    pyramid[0] = image;
+    int H = image.rows;
+    int W = image.cols;
+
+    for (int i=1; i<nlevels; i++) {
+        float scale = pow(scaleFactor, i);
+        cv::Size newSize(round(W / scale), round(H / scale));
+
+        cv::Mat resized;
+        cv::resize(pyramid[0], resized, newSize, 0, 0, cv::INTER_LINEAR);        
+        cv::GaussianBlur(resized, pyramid[i], cv::Size(5, 5), 0);    
+    }
+
+    // visualize
+    for (int i=0; i<pyramid.size(); i++) {
+        cv::imshow("Octave " + std::to_string(i), pyramid[i]);
+    }
+    cv::waitKey(0);
 }

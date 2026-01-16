@@ -1,15 +1,9 @@
-#ifndef ORB_H
-#define ORB_H
+#ifndef ORB_CPU_H
+#define ORB_CPU_H
 
-struct Keypoint { int x, y; };
-
-struct ORBDescriptor {
-    uint8_t data[32];
-};
-
-class OrientedFAST {
+class OrientedFASTCPU {
 public:
-    OrientedFAST(int nfeatures=3000, int threshold=50, int n=9, int nms_window=3, int patch_size=9);
+    OrientedFASTCPU(int nfeatures=3000, int threshold=50, int n=9, int nms_window=3, int patch_size=9);
     std::vector<Keypoint> detect(const cv::Mat& image);
     std::vector<float> compute_orientations(const cv::Mat& image, const std::vector<Keypoint>& keypoints);
 
@@ -21,19 +15,19 @@ private:
     int patch_size;
 };
 
-class RotatedBRIEF {
+class RotatedBRIEFCPU {
 public:
-    RotatedBRIEF();
+    RotatedBRIEFCPU();
+    int sum5x5(const cv::Mat &integral, int x, int y, int width);
     std::vector<ORBDescriptor> compute(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations);
-    
 private:
     int n_bits;
     int patch_size;
 };
 
-class ORB {
+class ORBCPU {
 public:
-    ORB(int nfeatures=500, float scaleFactor=1.2f, int nlevels=8);
+    ORBCPU(int nfeatures=500, float scaleFactor=1.2f, int nlevels=8);
     void detectAndCompute(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& orientations, std::vector<ORBDescriptor>& descriptors);
 
 private:
@@ -42,10 +36,10 @@ private:
     int nlevels;
     std::vector<cv::Mat> pyramid;
 
-    OrientedFAST fast;
-    RotatedBRIEF brief;
+    OrientedFASTCPU fast;
+    RotatedBRIEFCPU brief;
 
     void buildPyramid(const cv::Mat& image);
 };
 
-#endif // ORB_H
+#endif // ORB_CPU_H

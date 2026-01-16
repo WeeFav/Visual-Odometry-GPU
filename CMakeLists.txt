@@ -15,23 +15,17 @@ target_link_libraries(vo_tracking ${OpenCV_LIBS})
 add_executable(vo_ba src/with_bundle_adjustment.cpp)
 target_link_libraries(vo_ba ${OpenCV_LIBS} Ceres::ceres)
 
-add_executable(orb 
+add_executable(compare 
+    src/compare.cpp
     src/orb.cpp
+    src/orb_cpu.cpp
+    src/orb_pattern.cpp
     src/GaussianBlur.cu
     src/Fast.cu
     src/Orientations.cu
     src/Brief.cu
 )
-target_link_libraries(orb ${OpenCV_LIBS})
-target_include_directories(orb PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-add_executable(fast 
-    src/fast.cpp
-    src/Fast.cu
-)
-target_link_libraries(fast ${OpenCV_LIBS})
-target_include_directories(fast PRIVATE
+target_link_libraries(compare ${OpenCV_LIBS})
+target_include_directories(compare PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
