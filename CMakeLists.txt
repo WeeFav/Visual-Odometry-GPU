@@ -21,6 +21,7 @@ add_executable(compare
     src/orb_cpu.cpp
     src/orb_pattern.cpp
     src/GaussianBlur.cu
+    src/GaussianBlur1D.cu
     src/Fast.cu
     src/Orientations.cu
     src/Brief.cu
