@@ -86,6 +86,14 @@ void GaussianBlur(const cv::Mat& image, cv::Mat& dst) {
     int height_out = (height - kernel_size + 2 * 0) / 1 + 1;
     int width_out = (width - kernel_size + 2 * 0) / 1 + 1;    
     
+    cudaFree(0); // warm up
+
+    /* create and start timer */
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+
     // Allocate device memory and copy input data over to GPU
     float *d_input, *d_output;
     cudaMalloc(&d_input, height*width*sizeof(float));
@@ -106,6 +114,13 @@ void GaussianBlur(const cv::Mat& image, cv::Mat& dst) {
     float h_output[height_out * width_out];
     cudaMemcpy(h_output, d_output, height_out*width_out*sizeof(float), cudaMemcpyDeviceToHost);
     cudaCheckErrors("kernel execution failure or cudaMemcpy H2D failure");
+
+    /* stop CPU timer */
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    fprintf(stdout, "Total time CPU is %f sec\n", elapsedTime / 1000.0f );
 
     cv::Mat output_mat(height_out, width_out, CV_32F);
     std::memcpy(output_mat.ptr<float>(), h_output, height_out * width_out * sizeof(float));    

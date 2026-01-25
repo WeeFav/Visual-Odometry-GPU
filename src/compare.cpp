@@ -6,26 +6,27 @@
 #include <string>
 #include "orb.hpp"
 #include "orb_cpu.hpp"
-#include "GaussianBlur.cuh"
+// #include "GaussianBlur.cuh"
+#include "GaussianBlur.hpp"
 
 int main() {
     cv::Mat image = cv::imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv::IMREAD_GRAYSCALE);
     
     cv::Mat a, b;
-    GaussianBlur(image, a);
-    GaussianBlur1D(image, b);
+    GaussianBlurCUDA(image, a, 5);
+    // GaussianBlur1D(image, b);
 
-    cv::Mat diff; 
-    cv::compare(a, b, diff, cv::CMP_NE);
-    std::cout << diff.cols * diff.rows << std::endl;
-    std::cout << cv::countNonZero(diff) << std::endl;
+    // cv::Mat diff; 
+    // cv::compare(a, b, diff, cv::CMP_NE);
+    // std::cout << diff.cols * diff.rows << std::endl;
+    // std::cout << cv::countNonZero(diff) << std::endl;
 
     // cv::cvtColor(image, image_cpu, cv::COLOR_GRAY2BGR);
     // cv::imshow("orig", image);
-    // cv::imshow("2d", a);
+    cv::imshow("2d", a);
     // cv::imshow("1d", b);
-    // cv::waitKey(0);
-    // cv::destroyAllWindows();
+    cv::waitKey(0);
+    cv::destroyAllWindows();
 
 
     // ORBCPU orb_cpu;

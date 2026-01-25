@@ -20,11 +20,12 @@ add_executable(compare
     src/orb.cpp
     src/orb_cpu.cpp
     src/orb_pattern.cpp
-    src/GaussianBlur.cu
-    src/GaussianBlur1D.cu
-    src/Fast.cu
-    src/Orientations.cu
-    src/Brief.cu
+    src/GaussianBlur.cpp
+    src/cuda/GaussianBlur.cu
+    src/cuda/Fast.cu
+    src/cuda/Orientations.cu
+    src/cuda/Brief.cu
+    src/cuda/Convolution.cu
 )
 target_link_libraries(compare ${OpenCV_LIBS})
 target_include_directories(compare PRIVATE
