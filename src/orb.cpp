@@ -6,7 +6,6 @@
 #include "Fast.cuh"
 #include "Brief.cuh"
 
-
 OrientedFAST::OrientedFAST(int nfeatures, int threshold, int n, int nms_window, int patch_size) {
     this->nfeatures = nfeatures;
     this->threshold = threshold;
@@ -27,7 +26,6 @@ std::vector<float> OrientedFAST::compute_orientations(const cv::Mat& image, cons
     Orientations(image, keypoints, orientations, patch_size);
     return orientations;
 }
-
 
 RotatedBRIEF::RotatedBRIEF() {
     this->n_bits = 256;

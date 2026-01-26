@@ -105,6 +105,8 @@ void GaussianBlur(const cv::Mat& image, cv::Mat& dst) {
     cudaCheckErrors("cudaMemcpy H2D failure");
     
     // Run GPU kernel
+    // Normally all threads in a block load to shm and contribute to the output. When halo is needed, shm will be larger than block size and some threads will load halo. Since every thread in the block contributes to output, stride for grid is equals to block size
+    // Here, block size includes threads that only load halo and do no computing. We can imagine block size equals to the expanded shm from above, and output_tile_size is the block size from above. Thus,  stride for grid is equals to output_tile_size since we can only skip over threads that actually contribute to output.
     dim3 block(block_size, block_size);
     dim3 grid((width+output_tile_size-1)/output_tile_size, (height+output_tile_size-1)/output_tile_size);
     d_GaussianBlur<<<grid, block>>>(d_input, d_output, height, width, height_out, width_out);

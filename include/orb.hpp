@@ -33,7 +33,7 @@ private:
 
 class ORB {
 public:
-    ORB(int nfeatures=500, float scaleFactor=1.2f, int nlevels=8);
+    ORB(int nfeatures=3000, float scaleFactor=1.2f, int nlevels=8);
     void detectAndCompute(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& orientations, std::vector<ORBDescriptor>& descriptors);
 
 private:

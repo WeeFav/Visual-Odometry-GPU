@@ -39,7 +39,11 @@ float* createGaussianKernel(int kernelSize, float sigma = -1.0f) {
 void GaussianBlurCUDA(const cv::Mat& image, cv::Mat& dst, int kernel_size) {
     float* kernel = createGaussianKernel(kernel_size);
     
-    conv2d(image, dst, kernel, kernel_size);
+    int kernel_radius = kernel_size / 2;
+    cv::Mat padded;
+    cv::copyMakeBorder(image, padded, kernel_radius, kernel_radius, kernel_radius, kernel_radius, cv::BORDER_REFLECT_101);
+
+    conv2d(padded, dst, kernel, kernel_size);
 
     delete[] kernel; // Free memory
 }
