@@ -9,8 +9,8 @@ struct ORBDescriptor {
 
 class OrientedFAST {
 public:
-    OrientedFAST(int nfeatures=3000, int threshold=50, int n=9, int nms_window=3, int patch_size=9);
-    std::vector<Keypoint> detect(const cv::Mat& image);
+    OrientedFAST(int threshold=20, int n=9, int nms_window=3, int patch_size=31);
+    std::vector<Keypoint> detect(const cv::Mat& image, int nfeatures);
     std::vector<float> compute_orientations(const cv::Mat& image, const std::vector<Keypoint>& keypoints);
 
 private:
@@ -27,13 +27,13 @@ public:
     std::vector<ORBDescriptor> compute(const cv::Mat& image, const std::vector<Keypoint>& keypoints, const std::vector<float>& orientations);
     
 private:
-    int n_bits;
-    int patch_size;
+    int n_bits = 256;
+    int patch_size = 31;
 };
 
 class ORB {
 public:
-    ORB(int nfeatures=3000, float scaleFactor=1.2f, int nlevels=8);
+    ORB(int nfeatures=500, float scaleFactor=1.2f, int nlevels=8);
     void detectAndCompute(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& orientations, std::vector<ORBDescriptor>& descriptors);
 
 private:

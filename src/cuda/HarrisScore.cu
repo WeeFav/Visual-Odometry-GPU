@@ -3,6 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include "GaussianBlur.hpp"
 #include "Sobel.hpp"
+#include "orb.hpp"
 
 // error checking macro
 #define cudaCheckErrors(msg) \
@@ -17,14 +18,16 @@
         } \
     } while (0)
 
-const int block_size = 16; // all threads in the block participates in loading input into shared memory but not in computing output
+const int block_size = 256;
 
-__global__ void d_HarrisCorner(const float* Sx2, const float* Sy2, const float* Sxy, float* output, int height, int width, int k) {
+__global__ void d_HarrisScore(const float* Sx2, const float* Sy2, const float* Sxy, Keypoint* keypoints, float* output, int kp_count, int width, int k) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (idx < width && idy < height) {
-        int i = idy * width + idx;
+    if (idx < kp_count) {
+        int x = keypoints[idx].x;
+        int y = keypoints[idx].y;
+
+        int i = y * width + x;
         float a = Sx2[i];
         float b = Sxy[i];
         float c = Sy2[i];
@@ -32,11 +35,11 @@ __global__ void d_HarrisCorner(const float* Sx2, const float* Sy2, const float* 
         float det = a * c - b * b;
         float trace = a + c;
 
-        output[i] = det - k * trace * trace;        
+        output[idx] = det - k * trace * trace;        
     }
 }
 
-void HarrisCorner(const cv::Mat& image, cv::Mat& dst, int corner_window, int k) {
+void HarrisScore(const cv::Mat& image, std::vector<Keypoint>& keypoints, std::vector<float>& harris_scores, int corner_window, int k) {
     int height = image.rows;
     int width = image.cols;
     
@@ -53,34 +56,34 @@ void HarrisCorner(const cv::Mat& image, cv::Mat& dst, int corner_window, int k) 
     GaussianBlurCUDA(Iy2, Sy2, corner_window);
     GaussianBlurCUDA(Iy2, Sxy, corner_window);
 
-    cv::Mat harris(image.size(), CV_32F);
-
     float* h_Sx2 = Sx2.ptr<float>();
     float* h_Sy2 = Sy2.ptr<float>();
     float* h_Sxy = Sxy.ptr<float>();
-    float *h_output = harris.ptr<float>();
+    Keypoint* h_keypoints = keypoints.data();
 
     // Allocate device memory and copy input data over to GPU
     float *d_Sx2, *d_Sy2, *d_Sxy, *d_output;
+    Keypoint *d_keypoints;
     cudaMalloc(&d_Sx2, height*width*sizeof(float));
     cudaMalloc(&d_Sy2, height*width*sizeof(float));
     cudaMalloc(&d_Sxy, height*width*sizeof(float));
-    cudaMalloc(&d_output, height*width*sizeof(float));
+    cudaMalloc(&d_keypoints, keypoints.size()*sizeof(Keypoint));
+    cudaMalloc(&d_output, keypoints.size()*sizeof(Keypoint));
     cudaCheckErrors("cudaMalloc failure");
 
     cudaMemcpy(d_Sx2, h_Sx2, height*width*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Sy2, h_Sy2, height*width*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_Sxy, h_Sxy, height*width*sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemset(d_output, 0, height*width*sizeof(float));
+    cudaMemcpy(d_keypoints, h_keypoints, keypoints.size()*sizeof(Keypoint), cudaMemcpyHostToDevice);
+    cudaMemset(d_output, 0, keypoints.size()*sizeof(Keypoint));
     cudaCheckErrors("cudaMemcpy H2D failure");
 
     // Run GPU kernel
-    dim3 block(block_size, block_size);
-    dim3 grid((width+block_size-1)/block_size, (height+block_size-1)/block_size);
-    d_HarrisCorner<<<grid, block>>>(d_Sx2, d_Sy2, d_Sxy, d_output, height, width, k);
+    d_HarrisScore<<<(keypoints.size()+block_size-1)/block_size, block_size>>>(d_Sx2, d_Sy2, d_Sxy, d_keypoints, d_output, keypoints.size(), width, k);
     cudaCheckErrors("kernel launch failure");
 
     // Copy output from device to host
-    cudaMemcpy(h_output, d_output, height*width*sizeof(float), cudaMemcpyDeviceToHost);
+    harris_scores.resize(keypoints.size());
+    cudaMemcpy(harris_scores.data(), d_output, keypoints.size()*sizeof(Keypoint), cudaMemcpyDeviceToHost);
     cudaCheckErrors("kernel execution failure or cudaMemcpy H2D failure");
 }

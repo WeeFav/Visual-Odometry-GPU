@@ -13,14 +13,14 @@
 int main() {
     cv::Mat image = cv::imread("/home/marvin/Visual-Odometry-GPU/000000.png", cv::IMREAD_GRAYSCALE);
     
-    cv::Mat a, b;
-    GaussianBlurCUDA(image, a, 5);
-    SobelCUDA(image, b, 0);
-    // GaussianBlur1D(image, b);
+    // cv::Mat a, b;
+    // GaussianBlurCUDA(image, a, 5);
+    // SobelCUDA(image, b, 0);
+    // // GaussianBlur1D(image, b);
 
-    std::cout << image.rows << image.cols << std::endl;
-    std::cout << a.rows << a.cols << std::endl;
-    std::cout << b.rows << b.cols << std::endl;
+    // std::cout << image.rows << image.cols << std::endl;
+    // std::cout << a.rows << a.cols << std::endl;
+    // std::cout << b.rows << b.cols << std::endl;
 
     // cv::Mat diff; 
     // cv::compare(a, b, diff, cv::CMP_NE);
@@ -29,22 +29,21 @@ int main() {
 
     // cv::cvtColor(image, image_cpu, cv::COLOR_GRAY2BGR);
     // cv::imshow("orig", image);
-    cv::imshow("blur", a);
-    cv::imshow("sobel", b);
+    // cv::imshow("blur", a);
+    // cv::imshow("sobel", b);
     // cv::imshow("1d", b);
-    cv::waitKey(0);
-    cv::destroyAllWindows();
+    // cv::waitKey(0);
+    // cv::destroyAllWindows();
 
 
     // ORBCPU orb_cpu;
-    ORB orb_gpu(100);
-
+    ORB orb_gpu;
     // std::vector<Keypoint> keypoints_cpu;
-    // std::vector<Keypoint> keypoints_gpu;
+    std::vector<Keypoint> keypoints_gpu;
     // std::vector<float> orientations_cpu;
-    // std::vector<float> orientations_gpu;
+    std::vector<float> orientations_gpu;
     // std::vector<ORBDescriptor> descriptors_cpu;
-    // std::vector<ORBDescriptor> descriptors_gpu;
+    std::vector<ORBDescriptor> descriptors_gpu;
 
     // // CPU
     // orb_cpu.detectAndCompute(image, keypoints_cpu, orientations_cpu, descriptors_cpu);
@@ -62,8 +61,8 @@ int main() {
 
     // cv::imshow("CPU", image_cpu);
 
-    // // GPU
-    // orb_gpu.detectAndCompute(image, keypoints_gpu, orientations_gpu, descriptors_gpu);
+    // GPU
+    orb_gpu.detectAndCompute(image, keypoints_gpu, orientations_gpu, descriptors_gpu);
 
     // cv::Mat image_gpu;
     // cv::cvtColor(image, image_gpu, cv::COLOR_GRAY2BGR);
