@@ -60,9 +60,46 @@ void ORB::detectAndCompute(const cv::Mat& image, std::vector<Keypoint>& keypoint
 
     for (int l=0; l<nlevels; l++) {
         int nfeatures_l = nfeatures * ((1 - 1/scaleFactor) / (1 - std::pow(1/scaleFactor, nlevels))) * std::pow(1/scaleFactor, l);
-        std::vector<Keypoint> keypoints_l = fast.detect(pyramid[l], nfeatures_l);
+        std::vector<Keypoint> keypoints_l = fast.detect(pyramid[l], nfeatures_l * 2);
         std::vector<float> harris_scores;
         HarrisScore(pyramid[l], keypoints_l, harris_scores, 7, 0.04);
+
+        std::vector<std::pair<int, float>> kp_scores;
+        for (int i=0; i<keypoints_l.size(); i++) {
+            kp_scores.push_back({i, harris_scores[i]});
+        }
+
+        // Semi sort array
+        std::nth_element(
+            kp_scores.begin(), 
+            kp_scores.begin() + nfeatures_l, 
+            kp_scores.end(),
+            [](const std::pair<int, float> a, const std::pair<Keypoint, float> b) {
+                return a.second > b.second;
+            }
+        );
+
+        // Keep top N harris score
+        std::vector<Keypoint> keypoints_filtered;
+        for (auto& kp_score : kp_scores) {
+            keypoints_filtered.push_back(keypoints_l[kp_score.first]);
+        }
+
+        std::cout << keypoints_filtered.size() << std::endl;
+
+        std::vector<float> orientations_l = fast.compute_orientations(pyramid[l], keypoints_filtered);
+        std::vector<ORBDescriptor> descriptors_l = brief.compute(image, keypoints_filtered, orientations_l);
+
+        // Map coordinate back to orignial input space
+        for (auto& kp : keypoints_filtered) {
+            float scale = std::pow(scaleFactor, l);
+            kp.x *= scale;
+            kp.y *= scale;
+        }
+
+        keypoints.insert(keypoints.end(), keypoints_filtered.begin(), keypoints_filtered.end());
+        orientations.insert(orientations.end(), orientations_l.begin(), orientations_l.end());
+        descriptors.insert(descriptors.end(), descriptors_l.begin(), descriptors_l.end());
     }
     
     // keypoints = fast.detect(image);

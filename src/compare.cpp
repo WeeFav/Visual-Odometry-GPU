@@ -64,16 +64,16 @@ int main() {
     // GPU
     orb_gpu.detectAndCompute(image, keypoints_gpu, orientations_gpu, descriptors_gpu);
 
-    // cv::Mat image_gpu;
-    // cv::cvtColor(image, image_gpu, cv::COLOR_GRAY2BGR);
-    // for (int i=0; i<keypoints_gpu.size(); i++) {
-    //     int x = keypoints_gpu[i].x;
-    //     int y = keypoints_gpu[i].y;
-    //     float dx = 10 * std::cos(orientations_gpu[i]);
-    //     float dy = 10 * std::sin(orientations_gpu[i]);
-    //     cv::circle(image_gpu, cv::Point(x, y), 3, cv::Scalar(0, 255, 0), 1);
-    //     cv::arrowedLine(image_gpu, cv::Point(x, y), cv::Point(static_cast<int>(x + dx), static_cast<int>(y + dy)), (0, 0, 255), 1, 8, 0, 0.3);
-    // }
+    cv::Mat image_gpu;
+    cv::cvtColor(image, image_gpu, cv::COLOR_GRAY2BGR);
+    for (int i=0; i<keypoints_gpu.size(); i++) {
+        int x = keypoints_gpu[i].x;
+        int y = keypoints_gpu[i].y;
+        float dx = 10 * std::cos(orientations_gpu[i]);
+        float dy = 10 * std::sin(orientations_gpu[i]);
+        cv::circle(image_gpu, cv::Point(x, y), 3, cv::Scalar(0, 255, 0), 1);
+        cv::arrowedLine(image_gpu, cv::Point(x, y), cv::Point(static_cast<int>(x + dx), static_cast<int>(y + dy)), (0, 0, 255), 1, 8, 0, 0.3);
+    }
 
     // cv::imshow("GPU", image_gpu);
     // cv::waitKey(0);

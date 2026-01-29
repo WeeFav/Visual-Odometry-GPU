@@ -25,7 +25,8 @@ __global__ void d_NMS(
     int width,
     int height,
     int NMS_RADIUS,
-    int nfeatures
+    int nfeatures,
+    float threshold
 )
 {
     // Dynamic shared memory (1D)
@@ -99,7 +100,7 @@ __global__ void d_NMS(
     if (x < NMS_RADIUS || y < NMS_RADIUS || x >= width - NMS_RADIUS || y >= height - NMS_RADIUS) return;       
 
     // corner check
-    if (val <= 0.0f) return; 
+    if (val <= threshold) return; 
 
     // NMS test
     bool is_max = true;
@@ -126,7 +127,7 @@ __global__ void d_NMS(
     }
 }
 
-void NMS(const cv::Mat& input, std::vector<Keypoint>& keypoints, int nms_window, int nfeatures) {
+void NMS(const cv::Mat& input, std::vector<Keypoint>& keypoints, int nms_window, int nfeatures, float threshold) {
     int height = input.rows;
     int width = input.cols;
     
@@ -149,7 +150,7 @@ void NMS(const cv::Mat& input, std::vector<Keypoint>& keypoints, int nms_window,
     dim3 block(block_size, block_size);
     dim3 grid((width+block_size-1)/block_size, (height+block_size-1)/block_size);
     size_t shared_mem_bytes = (block_size + 2 * NMS_RADIUS) * (block_size + 2 * NMS_RADIUS) * sizeof(float);
-    d_NMS<<<grid, block, shared_mem_bytes>>>(d_input, d_keypoints, d_kp_count, width, height, NMS_RADIUS, nfeatures);
+    d_NMS<<<grid, block, shared_mem_bytes>>>(d_input, d_keypoints, d_kp_count, width, height, NMS_RADIUS, nfeatures, threshold);
     cudaCheckErrors("kernel launch failure");
 
     // Copy output from device to host
